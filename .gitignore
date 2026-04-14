@@ -209,3 +209,7 @@ __marimo__/
 .DS_Store
 venv/
 data/raw/
+data/bronze/
+data/silver/
+data/gold/passenger/
+data/gold/freight/
