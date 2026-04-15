@@ -1,5 +1,5 @@
 """
-triggers.py
+UITLEG triggers.py
 
 Defines the trigger logic used by the Controller to decide when to invoke the Solver.
 
@@ -34,6 +34,13 @@ Usage
 
 import random
 
+from config.settings import (
+    THRESHOLD_MULTIPLIER,
+    MC_DELAY_PROBABILITY,
+    MC_DELAY_MAX_SECONDS,
+    MC_ITERATIONS,
+    THRESHOLD_CONFIDENCE,
+)
 
 # =============================================================================
 # Base class
@@ -132,8 +139,8 @@ class EventDrivenTrigger(BaseTrigger):
         self,
         event_driven_freq: float,
         controller_freq: float,
-        threshold_confidence: float = 0.6,
-        mc_iterations: int = 5,
+        threshold_confidence: float = THRESHOLD_CONFIDENCE,
+        mc_iterations: int = MC_ITERATIONS,
         performance_threshold: float = None,
     ):
         super().__init__()
@@ -190,7 +197,7 @@ class EventDrivenTrigger(BaseTrigger):
             # Default: set threshold at 1.5x the current state's total delay.
             # In a real deployment this would be calibrated from historical baselines.
             #TO DO: de 1.5 vervangen average delay wanneer er niet rescheduled wordt. anders best gewoon niet reschedulen
-            self.performance_threshold = max(current_metric * 1.5, 1.0)
+            self.performance_threshold = max(current_metric * THRESHOLD_MULTIPLIER, 1.0)
 
         worse_count = 0
         for _ in range(self.mc_iterations):
@@ -231,9 +238,7 @@ class EventDrivenTrigger(BaseTrigger):
             n_active = 1
 
         additional = sum(
-            random.uniform(0, 5) for _ in range(n_active) if random.random() < 0.3
-            #TO DO: zelfde als voor de voorgaande 1.5x gaan we simulatie moeten doen zonder reschedulen en deze waarden bepalen
-        )
+            random.uniform(0, MC_DELAY_MAX_SECONDS) for _ in range(n_active) if random.random() < MC_DELAY_PROBABILITY)
         return current_metric + additional
 
     def __repr__(self):
@@ -278,8 +283,8 @@ class HybridTrigger(BaseTrigger):
         event_driven_freq: float,
         controller_freq: float,
         periodic_freq: float,
-        threshold_confidence: float = 0.6,
-        mc_iterations: int = 5,
+        threshold_confidence: float = THRESHOLD_CONFIDENCE,
+        mc_iterations: int = MC_ITERATIONS,
         performance_threshold: float = None,
     ):
         super().__init__()
@@ -301,9 +306,7 @@ class HybridTrigger(BaseTrigger):
             performance_threshold=performance_threshold,
         )
 
-    # ------------------------------------------------------------------
-    # Delegate state tracking to both sub-triggers
-    # ------------------------------------------------------------------
+    # Delegate state tracking to both sub-triggers:
 
     def notify_rescheduled(self, current_time: float):
         super().notify_rescheduled(current_time)
@@ -313,19 +316,17 @@ class HybridTrigger(BaseTrigger):
         super().notify_evaluated(current_time)
         self._event_trigger.notify_evaluated(current_time)
 
-    # ------------------------------------------------------------------
     # Main entry point
-    # ------------------------------------------------------------------
 
     def should_reschedule(self, state, current_time: float) -> bool:
         """
-        Returns True if the periodic deadline fires OR the event-driven arm fires.
+        Returns True if the periodic deadline is there OR the event-driven part fires.
         """
-        # Periodic arm: hard deadline
+        # Periodic part: hard deadline
         if self._time_since_reschedule(current_time) >= self.periodic_freq:
             return True
 
-        # Event-driven arm
+        # Event-driven part
         return self._event_trigger.should_reschedule(state, current_time)
 
     def __repr__(self):
@@ -341,13 +342,11 @@ class HybridTrigger(BaseTrigger):
 
 
 # =============================================================================
-# Factory helper
+# Trigger maker
 # =============================================================================
 
 def make_trigger(strategy: str, **kwargs) -> BaseTrigger:
     """
-    Convenience factory.
-
     Parameters
     ----------
     strategy : str
@@ -363,11 +362,13 @@ def make_trigger(strategy: str, **kwargs) -> BaseTrigger:
     >>> t = make_trigger('hybrid', event_driven_freq=1800, controller_freq=900,
     ...                   periodic_freq=3600, threshold_confidence=0.8)
     """
-    strategies = {
+    strategies = { #woordenboek van strategieën naar klassen 
         "periodic":     PeriodicTrigger,
         "event_driven": EventDrivenTrigger,
         "hybrid":       HybridTrigger,
     }
+
+    #als strategy valid, retourneert bijpassende trigger met zijn parameters. anders error
     if strategy not in strategies:
         raise ValueError(f"Unknown strategy '{strategy}'. Choose from: {list(strategies)}")
     return strategies[strategy](**kwargs)
