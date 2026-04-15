@@ -21,25 +21,10 @@ DELTA_MAX  = 86400   # maximale vertraging (vooraleer er cancellation plaatsvind
 #TAU_MAX   = 5400 # Planning horizon (s) 90 min, treinen en segmenten die verder liggen dan 90 min zitten niet in active trains TO DO:NOG TOEVOEGEN IN instance.py
 
 # Solver settings
-SOLVER_TIMEOUT_SECONDS = 60     # Max solve time per Gurobi call
-SOLVER_MIP_GAP         = 0.01   # Relative MIP gap tolerance (1 %)
- 
- 
-# Cancellation penalties
-CANCELLATION_PENALTY = {
-    "P": 200,
-    "F": 100,
-}
- 
- 
-# Priority weights
-PRIORITY_WEIGHT = {
-    "P": 2,
-    "F": 1,
-}
- 
- 
-# Monte Carlo constants — TO DO: calibrate from baseline simulations
+SOLVER_TIMEOUT_SECONDS = 60     # Max solve time per Gurobi call, als er een feasible oplossing gevonden werd, wordt die gereturned en status = "time-out"
+SOLVER_MIP_GAP         = 0.01   # Relative MIP gap tolerance (1 %) als de gevonden opl zo dicht komt als 1%, wordt die gereturned en status = "optimal"
+
+# Monte Carlo constants — TO DO: calibrate from baseline simulations!!!!
 THRESHOLD_MULTIPLIER = 1.5   # performance_threshold = THRESHOLD_MULTIPLIER * current delay
 MC_DELAY_PROBABILITY = 0.3   # Probability a train picks up extra delay per MC step
 MC_DELAY_MAX_SECONDS = 300   # Max extra delay per MC step (s) = 5 min
