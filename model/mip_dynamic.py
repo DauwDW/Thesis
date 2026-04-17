@@ -171,52 +171,49 @@ def build_and_solve_model(
         for i, j in C[s]:
             # C4a: if i before j (y=1), j must wait for i + headway H[i,j,s]
             model.addConstr(
-                a[j, s] >= d[i, s] + H[i, j, s]
-                - M * (1 - y[i, j, s]),
+                a[j, s] >= d[i, s] + H[i, j, s] - M * (1 - y[i, j, s]),
                 name=f"C4a_{i}_{j}_{s}")
             # C4b: if j before i (y=0), i must wait for j + headway H[j,i,s]
             model.addConstr(
-                a[i, s] >= d[j, s] + H[j, i, s]
-                - M * y[i, j, s],
+                a[i, s] >= d[j, s] + H[j, i, s] - M * y[i, j, s],
                 name=f"C4b_{i}_{j}_{s}")
 
     # -------------------------------------------------------------------------
-    # C5 — Dynamic priority threshold
+    # C7 — Dynamic priority threshold
     # -------------------------------------------------------------------------
     for t in T:
         s_last = final_seg[t]
 
-        # C5a: upgrade forced when delay >= gamma
+        # C7a: upgrade forced when delay >= gamma
         model.addConstr(
             delta[t, s_last] - gamma <= M * pdl[t],
-            name=f"C5a_upgrade_force_{t}")
+            name=f"C7a_upgrade_force_{t}")
 
-        # C5b: no upgrade when delay < gamma
+        # C7b: no upgrade when delay < gamma
         model.addConstr(
             delta[t, s_last] - gamma >= epsilon - M * (1 - pdl[t]),
-            name=f"C5b_upgrade_block_{t}")
+            name=f"C7b_upgrade_block_{t}")
 
     # -------------------------------------------------------------------------
-    # C6 — Linearisation
+    # C8 — Linearisation
     # -------------------------------------------------------------------------
     for t in T:
         s_last = final_seg[t]
 
-        # C6a: q_t ≤ δ_max · pdl_t  → forces q_t = 0 when pdl_t = 0
+        # C8a: forces q_t = 0 when pdl_t = 0
         model.addConstr(
             q[t] <= delta_max * pdl[t],
-            name=f"C6a_lin_upper_pdl_{t}")
+            name=f"C8a_lin_upper_pdl_{t}")
 
-        # C6b: q_t ≤ δ_{t, s_last}  → q_t cannot exceed actual final delay
+        # C8b: q_t cannot exceed actual final delay
         model.addConstr(
             q[t] <= delta[t, s_last],
-            name=f"C6b_lin_upper_delta_{t}")
+            name=f"C8b_lin_upper_delta_{t}")
 
-        # C6c: q_t ≥ δ_{t, s_last} - δ_max · (1 - pdl_t)
-        #      → when pdl_t = 1, combined with C6b, forces q_t = δ_{t, s_last}
+        # C8c: when pdl_t = 1, combined with C8b, forces q_t = δ_{t, s_last}
         model.addConstr(
             q[t] >= delta[t, s_last] - delta_max * (1 - pdl[t]),
-            name=f"C6c_lin_lower_{t}")
+            name=f"C8c_lin_lower_{t}")
 
     # -------------------------------------------------------------------------
     # Optimize

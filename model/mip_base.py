@@ -18,11 +18,17 @@ def build_and_solve_model(
     h_stop,
     w,
     L,
+    in_execution=None,
+    fix_arrival=None,
     M=None,
     time_limit=None,
     verbose=True
 ):
-
+    
+    if in_execution is None:
+        in_execution = {}
+    if fix_arrival is None:
+        fix_arrival = {}
     if M is None:
         M = L
 
@@ -57,7 +63,13 @@ def build_and_solve_model(
     # ----------------------------
     # Variables
     # ----------------------------
-    a = model.addVars(TS, vtype=GRB.CONTINUOUS, lb=0, name="a")
+    a = {}
+    for t, s in TS:
+        if (t, s) in fix_arrival:
+            fixed_time = fix_arrival[t, s]
+            a[t, s] = model.addVar(lb=fixed_time, ub=fixed_time, vtype= GRB.CONTINUOUS, name=f"a[{t},{s}]")
+        else:
+            a[t, s] = model.addVar(lb=0, vtype= GRB.CONTINUOUS, name = f"a[{t},{s}]")
     d = model.addVars(TS, vtype=GRB.CONTINUOUS, lb=0, name="d")
     delta = model.addVars(TS, vtype=GRB.CONTINUOUS, lb=0, name="delta")
 
@@ -80,8 +92,9 @@ def build_and_solve_model(
     for t in T:
         for s in path[t]:
             if s in Sl:
+                duration = in_execution.get((t, s), RT[t, s])
                 model.addConstr(
-                    d[t, s] >= a[t, s] + RT[t, s],
+                    d[t, s] >= a[t, s] + duration,
                     name=f"C1a_run_{t}_{s}"
                 )
 
@@ -89,10 +102,16 @@ def build_and_solve_model(
     for t in T:
         for s in path[t]:
             if s in Ss:
-                model.addConstr(
-                    d[t, s] >= a[t, s] + DW[t, s] * h_stop[t, s],
-                    name=f"C1b_dwell_{t}_{s}"
-                )
+                if (t, s) in in_execution:
+                    model.addConstr(
+                        d[t, s] >= a[t, s] + in_execution[t, s],
+                        name=f"C1b_dwell_{t}_{s}"
+                    )
+                else:
+                    model.addConstr(
+                        d[t, s] >= a[t, s] + DW[t, s] * h_stop[t, s],
+                        name=f"C1b_dwell_{t}_{s}"
+                    )
 
     # # C1c — transition between consecutive segments
     for t, s, s_next in consecutive_pairs:
@@ -149,48 +168,3 @@ def build_and_solve_model(
     model.optimize()
 
     return model, a, d, delta, y, C, final_seg
-
-
-# =============================================================================
-# DUMMY DATA
-# =============================================================================
-
-build_and_solve_model(
-    T  = ["T1", "T2"],
-    Tp = ["T1"],
-    Tf = ["T2"],
-    S  = ["S1", "S2", "S3"],
-    Ss = ["S1", "S3"],
-    Sl = ["S2"],
-    path = {
-        "T1": ["S1", "S2", "S3"],
-        "T2": ["S1", "S2", "S3"],
-    },
-    sched_entry = {
-        ("T1", "S1"): 0,  ("T1", "S2"): 10, ("T1", "S3"): 20,
-        ("T2", "S1"): 5,  ("T2", "S2"): 15, ("T2", "S3"): 25,
-    },
-    sched_dep = {
-        ("T1", "S1"): 5,  ("T1", "S2"): 15, ("T1", "S3"): 25,
-        ("T2", "S1"): 10, ("T2", "S2"): 20, ("T2", "S3"): 30,
-    },
-    RT = {
-        ("T1", "S2"): 8,
-        ("T2", "S2"): 8,
-    },
-    DW = {
-        ("T1", "S1"): 3, ("T1", "S3"): 2,
-        ("T2", "S1"): 3, ("T2", "S3"): 2,
-    },
-    H = {
-        ("T1", "T2", "S1"): 3, ("T2", "T1", "S1"): 3,
-        ("T1", "T2", "S2"): 4, ("T2", "T1", "S2"): 4,
-        ("T1", "T2", "S3"): 3, ("T2", "T1", "S3"): 3,
-    },
-    h_stop = {
-        ("T1", "S1"): 1, ("T1", "S3"): 1,
-        ("T2", "S1"): 1, ("T2", "S3"): 1,
-    },
-    w        = {"T1": 2, "T2": 1},
-    L        = 100,
-)
