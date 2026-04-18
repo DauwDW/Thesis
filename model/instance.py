@@ -10,12 +10,9 @@ Responsible for:
 - Building conflict sets C_s
 - Computing headway parameters H based on train type combinations
 """
+from config.settings import L, GAMMA, EPSILON, DELTA_MAX
 
-
-# =============================================================================
 # Headway lookup based on train type combinations (in seconds)
-# Adjust these values to match your domain knowledge / NMBS data
-# =============================================================================
 HEADWAY_TABLE = {
     ("P", "P"): 180,   # passenger following passenger
     ("P", "F"): 240,   # freight following passenger
@@ -32,10 +29,7 @@ def get_headway(type_i, type_j):
     return HEADWAY_TABLE.get((type_i, type_j), 180)  # default to 180 if not found
 
 
-# =============================================================================
 # Main function
-# =============================================================================
-
 def build_instance(state, timetable, trains, segments, current_time): #state komt uit de simulatie
     """
     Builds the MILP parameter sets from the current SystemState.
@@ -57,8 +51,7 @@ def build_instance(state, timetable, trains, segments, current_time): #state kom
     delayed_trains = [
         t for t in trains
         if state.current_delay(t.id) > 0
-        and not state.is_finished(t.id)
-    ]
+        and not state.is_finished(t.id)]
 
     # Step 2 — Find affected trains (remaining path overlaps with delayed train)
     delayed_ids = set(t.id for t in delayed_trains)
@@ -81,8 +74,7 @@ def build_instance(state, timetable, trains, segments, current_time): #state kom
    # Step 3 — Build relative train set T (delayed + affected, not yet finished)
     relevant_trains = [
         t for t in delayed_trains + affected_trains
-        if not state.is_finished(t.id)
-    ]
+        if not state.is_finished(t.id)]
 
     T  = [t.id for t in relevant_trains]
     Tp = [t.id for t in relevant_trains if t.train_type == "P"]
@@ -127,37 +119,32 @@ def build_instance(state, timetable, trains, segments, current_time): #state kom
     all_segs = set(s for segs in path.values() for s in segs)
 
     S  = list(all_segs)
-    Ss = [s for s in S if segments[s].seg_type == "station"]
-    Sl = [s for s in S if segments[s].seg_type == "line"]
+    Ss = set(s for s in S if segments[s].seg_type == "station")
+    Sl = set(s for s in S if segments[s].seg_type == "line")
 
     # Step 6 — Scheduled times from timetable (never change)
     sched_entry = {
         (t.id, s): timetable.scheduled_arrival(t.id, s)
-        for t in relevant_trains for s in path[t.id]
-    }
+        for t in relevant_trains for s in path[t.id]}
     sched_dep = {
         (t.id, s): timetable.scheduled_departure(t.id, s)
-        for t in relevant_trains for s in path[t.id]
-    }
+        for t in relevant_trains for s in path[t.id]}
 
     # Step 7 — Running times and dwell times
     RT = {
         (t.id, s): timetable.running_time(t.id, s)
         for t in relevant_trains for s in path[t.id]
-        if segments[s].seg_type == "line"
-    }
+        if segments[s].seg_type == "line"}
     DW = {
         (t.id, s): timetable.dwell_time(t.id, s)
         for t in relevant_trains for s in path[t.id]
-        if segments[s].seg_type == "station"
-    }
+        if segments[s].seg_type == "station"}
 
     # Step 8 — Halt indicators (does train stop at this station?)
     h_stop = {
         (t.id, s): timetable.halts_at(t.id, s)
         for t in relevant_trains for s in path[t.id]
-        if segments[s].seg_type == "station"
-    }
+        if segments[s].seg_type == "station"}
 
     # Step 9 — Headway parameters H based on train type combinations
     train_type = {t.id: t.train_type for t in relevant_trains}
@@ -168,8 +155,7 @@ def build_instance(state, timetable, trains, segments, current_time): #state kom
         C[s] = [
             (trains_on_s[a], trains_on_s[b])
             for a in range(len(trains_on_s))
-            for b in range(a + 1, len(trains_on_s))
-        ]
+            for b in range(a + 1, len(trains_on_s))]
 
     H = {}
     for s in S:
@@ -180,12 +166,12 @@ def build_instance(state, timetable, trains, segments, current_time): #state kom
    # Step 10 — Priority weights (static: based on train type) passenger bvb dubbel zo belangrijk als freight
     w = {
         t.id: 2 if t.train_type == "P" else 1
-        for t in relevant_trains
-    }
+        for t in relevant_trains}
+    psl = {
+        t.id: 1 if t.train_type == "P" else 0
+        for t in relevant_trains}
 
-    # -------------------------------------------------------------------------
     # Return all parameters as a dictionary
-    # -------------------------------------------------------------------------
     return dict(
         T=T, Tp=Tp, Tf=Tf,
         S=S, Ss=Ss, Sl=Sl,
@@ -197,6 +183,10 @@ def build_instance(state, timetable, trains, segments, current_time): #state kom
         H=H,
         h_stop=h_stop,
         w=w,
+        psl=psl,
+        L=L,
+        gamma=GAMMA,
+        epsilon=EPSILON,
+        delta_max=DELTA_MAX,
         in_execution=in_execution,
-        fix_arrival=fix_arrival
-    )
+        fix_arrival=fix_arrival)
