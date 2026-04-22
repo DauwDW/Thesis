@@ -13,6 +13,9 @@ GOLD_DIR     = Path("/Users/ddw/Desktop/Rescheduling/data/gold")
 # SILVER_DIR   = Path("")
 # GOLD_DIR     = Path("")
 
+#FREIGHT SAMPLING parameters
+FREIGHT_RUNNING_TIME_SCALE = 1.3
+
 # MIP parameters — gedeeld, staan wel gewoon hier
 M          = 86400   # τ_max in seconden (24 uur)
 GAMMA      = 300     # vertragingsdrempel γ in seconden (5 min)

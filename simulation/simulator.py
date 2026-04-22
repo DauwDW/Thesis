@@ -47,7 +47,7 @@ import logging
 
 import numpy as np
 
-from data.running_distributions import sample_running_time
+from reality.sampling import sample_running_time
 from domain                     import Timetable
 from domain.segment             import SegmentType
 from simulation.dispatcher      import Dispatcher
