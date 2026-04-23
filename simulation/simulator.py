@@ -5,7 +5,7 @@
 # Verantwoordelijkheden:
 #   1. Initialiseer de EventQueue op basis van de geplande timetable
 #   2. Verwerk events één voor één (TrainEntered, TrainExited)
-#   3. Sample werkelijke rijtijden via data/running_distributions.py
+#   3. Sample werkelijke rijtijden via reality/sampling.py
 #   4. Handhaaf blokbezetting en volgorde via de Dispatcher
 #   5. Handhaaf dwell-tijdconstraints via dispatcher.min_exit_time()
 #   6. Roep controller.step() aan na elk TrainExited-event
@@ -325,76 +325,13 @@ class Simulator:
         segment_id: str,
         entry_time: float,
     ) -> float:
-        """
-        Samplet de werkelijke verblijfsduur van een trein op een segment.
-
-        Voor stationssegmenten: geplande dwell-tijd (gecorrigeerd door
-        min_exit_time in _handle_entered voor C2 constraint).
-
-        Voor lijnsegmenten: sample uit empirische verdeling via
-        data/running_distributions.py. Fallback op geplande rijtijd.
-
-        Parameters
-        ----------
-        train_id   : int
-        segment_id : str
-        entry_time : float — werkelijke entrytijd (voor periodeberekening)
-
-        Returns
-        -------
-        float — verblijfsduur in seconden (altijd > 0)
-        """
-        segment = self._segments[segment_id]
-        train   = self._trains[train_id]
-
-        if segment.seg_type == SegmentType.STATION:
-            try:
-                return self._timetable.dwell_time(train_id, segment_id)
-            except (KeyError, ValueError):
-                logger.warning(
-                    f"Trein {train_id}: geen dwell_time voor '{segment_id}' "
-                    f"— fallback op 60s"
-                )
-                return 60.0
-
-        # Lijnsegment: sample uit empirische verdeling
-        dynamics = train.dynamics_at(segment_id)
-        period   = _seconds_to_period(entry_time)
-
-        if dynamics is None:
-            logger.debug(
-                f"Trein {train_id}: geen dynamics voor '{segment_id}' "
-                f"— fallback op geplande rijtijd"
-            )
-            return self._planned_duration(train_id, segment_id)
-
-        sampled = sample_running_time(
-            section    = segment_id,
-            train_type = train.train_subtype.value,
-            dynamics   = dynamics,
-            period     = period,
-            rng        = self._rng,
+        return sample_duration(
+            train     = self._trains[train_id],
+            segment   = self._segments[segment_id],
+            timetable = self._timetable,
+            entry_time= entry_time,
+            rng       = self._rng,
         )
-
-        if sampled is None:
-            return self._planned_duration(train_id, segment_id)
-
-        return sampled
-
-    def _planned_duration(self, train_id: int, segment_id: str) -> float:
-        """
-        Geplande verblijfsduur als fallback: exit_seconds − entry_seconds.
-        """
-        try:
-            entry = self._timetable.scheduled_arrival(train_id, segment_id)
-            exit_ = self._timetable.scheduled_departure(train_id, segment_id)
-            return max(1.0, exit_ - entry)
-        except (KeyError, ValueError):
-            logger.warning(
-                f"Trein {train_id}: geen geplande tijden voor '{segment_id}' "
-                f"— fallback op 60s"
-            )
-            return 60.0
 
     # ==========================================================================
     # MIP-oplossing toepassen
@@ -491,6 +428,66 @@ class Simulator:
             f"state={self._state.summary()}, "
             f"dispatcher={self._dispatcher})"
         )
+
+
+
+# =============================================================================
+# Hulpfunctie: duursampling
+# =============================================================================
+
+def sample_duration(train, segment, timetable, entry_time: float, rng) -> float:
+    """
+    Samplet de verblijfsduur van een trein op een segment.
+
+    Losse module-level functie zodat ook triggers.py ze kan importeren
+    zonder afhankelijkheid van de Simulator-instantie.
+
+    Voor stationssegmenten: geplande dwell-tijd.
+    Voor lijnsegmenten: sample via reality module, fallback op geplande duur.
+
+    Parameters
+    ----------
+    train      : Train
+    segment    : Segment
+    timetable  : Timetable
+    entry_time : float — werkelijke entrytijd (voor periodeberekening)
+    rng        : np.random.Generator
+
+    Returns
+    -------
+    float — verblijfsduur in seconden (altijd >= 1.0)
+    """
+    if segment.seg_type == SegmentType.STATION:
+        try:
+            return timetable.dwell_time(train.id, segment.id)
+        except (KeyError, ValueError):
+            logger.warning(
+                f"Trein {train.id}: geen dwell_time voor '{segment.id}' "
+                f"— fallback op 60s"
+            )
+            return 60.0
+
+    # Lijnsegment: sample uit empirische verdeling
+    dynamics = train.dynamics_at(segment.id)
+    period   = _seconds_to_period(entry_time)
+
+    if dynamics is not None:
+        sampled = sample_running_time(
+            section    = segment.id,
+            train_type = train.train_subtype.value,
+            dynamics   = dynamics,
+            period     = period,
+            rng        = rng,
+        )
+        if sampled is not None:
+            return sampled
+
+    logger.debug(
+        f"Trein {train.id}: geen data voor '{segment.id}' "
+        f"— fallback op geplande rijtijd"
+    )
+    st = timetable.get(train.id, segment.id)
+    return max(1.0, st.exit_seconds - st.entry_seconds)
 
 
 # =============================================================================

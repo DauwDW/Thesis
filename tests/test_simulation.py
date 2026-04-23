@@ -126,6 +126,16 @@ class MockTimetable:
             raise ValueError("Geen lijnsegment")
         return self._line_duration
 
+    def get(self, train_id: int, segment_id: str):
+        """Fallback gebruikt door sample_duration voor lijnsegmenten."""
+        class _Row:
+            def __init__(self, entry: float, exit_: float):
+                self.entry_seconds = entry
+                self.exit_seconds  = exit_
+        entry = self.scheduled_arrival(train_id, segment_id)
+        exit_ = self.scheduled_departure(train_id, segment_id)
+        return _Row(entry, exit_)
+
 
 class MockController:
     def step(self, state, current_time):

@@ -696,10 +696,10 @@ def save_gold(df: pd.DataFrame, source: str = 'passenger', n_trains: int | None 
     source_dir.mkdir(parents=True, exist_ok=True)
     df.to_parquet(source_dir / filename, index=False)
 
-    trains_dir = source_dir / 'trains'
-    trains_dir.mkdir(parents=True, exist_ok=True)
-    for train_no in df['TRAIN_NO'].unique():
-        df[df['TRAIN_NO'] == train_no].to_json(trains_dir / f"{train_no}.json")
+    # trains_dir = source_dir / 'trains'
+    # trains_dir.mkdir(parents=True, exist_ok=True)
+    # for train_no in df['TRAIN_NO'].unique():
+    #     df[df['TRAIN_NO'] == train_no].to_json(trains_dir / f"{train_no}.json")
 
     print(f"Opgeslagen ({source}): {df['TRAIN_NO'].nunique()} treinen, {len(df)} segmenten → {source_dir}")
 

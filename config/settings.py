@@ -1,5 +1,6 @@
 from pathlib import Path
 
+SIMULATION_SEED = 42
 # Pas aan naar jouw lokale situatie
 # Dauw:
 RAW_DATA_DIR = Path("/Users/ddw/Desktop/Rescheduling/data/raw")
@@ -13,6 +14,8 @@ GOLD_DIR     = Path("/Users/ddw/Desktop/Rescheduling/data/gold")
 # SILVER_DIR   = Path("")
 # GOLD_DIR     = Path("")
 
+SIMULATION_SEED = 42
+
 #FREIGHT SAMPLING parameters
 FREIGHT_RUNNING_TIME_SCALE = 1.3
 
@@ -21,6 +24,7 @@ M          = 86400   # τ_max in seconden (24 uur)
 GAMMA      = 300     # vertragingsdrempel γ in seconden (5 min)
 EPSILON    = 1       # kleine constante ε
 DELTA_MAX  = 86400   # maximale vertraging (vooraleer er cancellation plaatsvindt?)
+L          = 86400   # big-M voor MIP constraints (alias voor M)
 #TAU_MAX   = 5400 # Planning horizon (s) 90 min, treinen en segmenten die verder liggen dan 90 min zitten niet in active trains TO DO:NOG TOEVOEGEN IN instance.py
 
 # Solver settings
