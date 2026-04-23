@@ -154,33 +154,18 @@ class SystemState:
     # ==========================================================================
 
     def remaining_path(self, train_id: int) -> list[str]:
-        """
-        Geeft de nog af te leggen segmenten voor trein train_id.
-
-        Een segment telt als 'resterend' als de trein het nog niet verlaten
-        heeft (actual_exit is None). Afgeronde segmenten worden weggelaten.
-
-        Treinen die nog niet gestart zijn (lege _actual) krijgen hun
-        volledige pad terug — ze zijn nog niet ingezet maar wél relevant
-        voor conflictdetectie in model/instance.py.
-
-        Parameters
-        ----------
-        train_id : int
-
-        Returns
-        -------
-        list[str] — geordende lijst van resterende segment-ids
-                    leeg als de trein klaar is
-        """
         train    = self._trains[train_id]
         segments = self._actual[train_id]
 
-        return [
-            seg_id for seg_id in train.path
-            if segments.get(seg_id, (None, None))[1] is None
-            # exit is None → segment nog niet verlaten (of nog niet betreden)
-        ]
+        if not segments:
+            return list(train.path)
+
+        for i, seg_id in enumerate(train.path):
+            entry, exit_ = segments.get(seg_id, (None, None))
+            if exit_ is None:
+                return list(train.path[i:])
+
+        return []
 
     def current_delay(self, train_id: int) -> float:
         """

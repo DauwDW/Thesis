@@ -138,7 +138,7 @@ def add_time_in_seconds(df: pd.DataFrame) -> pd.DataFrame:
     Conventie (zie module-docstring):
         ENTRY_SECONDS = A_t,s = moment binnenkomst segment  (vroeger)
         EXIT_SECONDS  = D_t,s = moment verlaten segment     (later)
-        → altijd ENTRY_SECONDS < EXIT_SECONDS
+        → altijd ENTRY_SECONDS =< EXIT_SECONDS
 
     Voor dwell-segmenten (SOURCE == TARGET):
         Normaal: PLANNED_DEPARTURE = verlaten station (later)
@@ -174,10 +174,6 @@ def add_time_in_seconds(df: pd.DataFrame) -> pd.DataFrame:
     min_entry = df['_entry'].min()
     df['ENTRY_SECONDS'] = (df['_entry'] - min_entry).dt.total_seconds()
     df['EXIT_SECONDS']  = (df['_exit']  - min_entry).dt.total_seconds()
-
-    # Correctie voor gelijke tijden (WITHIN-STATION-PASSING)
-    equal_mask = df['ENTRY_SECONDS'] == df['EXIT_SECONDS']
-    df.loc[equal_mask, 'EXIT_SECONDS'] += 5
 
     return df.drop(columns=['_entry', '_exit'])
 
