@@ -11,6 +11,7 @@ Responsible for:
 - Computing headway parameters H based on train type combinations
 """
 from config.settings import L, GAMMA, EPSILON, DELTA_MAX
+from domain.segment import SegmentType
 
 # Headway lookup based on train type combinations (in seconds)
 HEADWAY_TABLE = {
@@ -97,12 +98,11 @@ def build_instance(state, timetable, trains, segments, current_time): #state kom
             continue  # segment already completed, not in remaining path
  
         # How long has the train already been on this segment?
-        # TODO: confirm method name with partner — state.actual_arrival(t.id, seg)
-        actual_arrival_time = state.actual_arrival(t.id, seg)
+        actual_arrival_time = state.actual_entry(t.id, seg)
         elapsed = current_time - actual_arrival_time
  
         # Full planned duration on this segment (running time or dwell time)
-        if segments[seg].seg_type == "line":
+        if segments[seg].seg_type == SegmentType.BETWEEN_STATION:
             full_duration = timetable.running_time(t.id, seg)
         else:
             full_duration = timetable.dwell_time(t.id, seg)
@@ -119,8 +119,8 @@ def build_instance(state, timetable, trains, segments, current_time): #state kom
     all_segs = set(s for segs in path.values() for s in segs)
 
     S  = list(all_segs)
-    Ss = set(s for s in S if segments[s].seg_type == "station")
-    Sl = set(s for s in S if segments[s].seg_type == "line")
+    Ss = set(s for s in S if segments[s].seg_type == SegmentType.STATION)
+    Sl = set(s for s in S if segments[s].seg_type == SegmentType.BETWEEN_STATION)
 
     # Step 6 — Scheduled times from timetable (never change)
     sched_entry = {
@@ -134,17 +134,17 @@ def build_instance(state, timetable, trains, segments, current_time): #state kom
     RT = {
         (t.id, s): timetable.running_time(t.id, s)
         for t in relevant_trains for s in path[t.id]
-        if segments[s].seg_type == "line"}
+        if segments[s].seg_type == SegmentType.BETWEEN_STATION}
     DW = {
         (t.id, s): timetable.dwell_time(t.id, s)
         for t in relevant_trains for s in path[t.id]
-        if segments[s].seg_type == "station"}
+        if segments[s].seg_type == SegmentType.STATION}
 
     # Step 8 — Halt indicators (does train stop at this station?)
     h_stop = {
         (t.id, s): timetable.halts_at(t.id, s)
         for t in relevant_trains for s in path[t.id]
-        if segments[s].seg_type == "station"}
+        if segments[s].seg_type == SegmentType.STATION}
 
     # Step 9 — Headway parameters H based on train type combinations
     train_type = {t.id: t.train_type for t in relevant_trains}
