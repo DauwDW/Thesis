@@ -50,7 +50,7 @@ def build_instance(state, timetable, trains, segments, current_time): #state kom
 
    # Step 1 — Find delayed trains
     delayed_trains = [
-        t for t in trains
+        t for t in trains.values()
         if state.current_delay(t.id) > 0
         and not state.is_finished(t.id)]
 
