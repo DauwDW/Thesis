@@ -58,7 +58,7 @@ def build_instance(state, timetable, trains, segments, current_time): #state kom
     delayed_ids = set(t.id for t in delayed_trains)
 
     affected_trains = []
-    for t in trains:
+    for t in trains.values():
         if t.id in delayed_ids:
             continue  # already included
         if state.is_finished(t.id):
