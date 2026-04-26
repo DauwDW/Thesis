@@ -63,14 +63,14 @@ def compute_fcfs_order(state, segments):
         # state.remaining_path(train_id) — VAN DAUWS SystemState
         trains_on_seg = [
             t_id for t_id in state.active_train_ids()
-            if seg.id in state.remaining_path(t_id)
+            if seg in state.remaining_path(t_id)
         ]
 
         # state.actual_arrival(train_id, seg.id) — VAN DAUWS SystemState
         # confirm exact method name!!!!
-        fcfs[seg.id] = sorted(
+        fcfs[seg] = sorted(
             trains_on_seg,
-            key=lambda t_id: state.actual_entry(t_id, seg.id)
+            key=lambda t_id: state.actual_entry(t_id, seg)
         )
 
     return fcfs
