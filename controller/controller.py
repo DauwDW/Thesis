@@ -70,7 +70,7 @@ def compute_fcfs_order(state, segments):
         # confirm exact method name!!!!
         fcfs[seg.id] = sorted(
             trains_on_seg,
-            key=lambda t_id: state.actual_arrival(t_id, seg.id)
+            key=lambda t_id: state.actual_entry(t_id, seg.id)
         )
 
     return fcfs
@@ -203,11 +203,6 @@ class Controller:
             fcfs_order = fcfs_order,
             runtime    = time.time() - step_start
         )
-
-        # Step 5 — Apply solution or FCFS ordering to SystemState
-        state.apply_solution(solution)
-
-        state.apply_fcfs(fcfs_order) #TO DO: naam gelijkmaken met DAUWs SystemState
 
     # ------------------------------------------------------------------
     # Logging
