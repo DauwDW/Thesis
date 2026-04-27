@@ -19,8 +19,15 @@ HORIZON = 3600
 #FREIGHT SAMPLING parameters
 FREIGHT_RUNNING_TIME_SCALE = 1.3
 
-# MIP parameters — gedeeld, staan wel gewoon hier
-M          = 86400   # τ_max in seconden (24 uur)
+# MIP gewichten per treintype
+WEIGHT_PASSENGER = 2   # gewicht in objectieffunctie voor passagierstreinen
+WEIGHT_FREIGHT   = 1   # gewicht in objectieffunctie voor goederentreinen
+
+# Dynamic priority indicator
+PSL_PASSENGER = 1   # passagierstrein krijgt prioriteitsupgrade
+PSL_FREIGHT   = 0   # goederentrein krijgt geen prioriteitsupgrade
+
+# MIP parameters
 GAMMA      = 300     # vertragingsdrempel γ in seconden (5 min)
 EPSILON    = 1       # kleine constante ε
 DELTA_MAX  = 86400   # maximale vertraging (vooraleer er cancellation plaatsvindt?)

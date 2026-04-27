@@ -62,6 +62,9 @@ def compute_fcfs_order(state, segments: dict) -> dict:
             except KeyError:
                 pass  # nog niet op dit segment — niet opnemen in FCFS
 
+        if not entered:
+            continue
+
         fcfs[seg_id] = [t_id for _, t_id in sorted(entered)]
 
     return fcfs
