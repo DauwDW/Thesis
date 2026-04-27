@@ -122,6 +122,26 @@ class Dispatcher:
             f"op geplande tijd {planned_time:.0f}s"
         )
 
+
+    def queue_time(self, train_id: int, segment_id: str) -> float:
+        """
+        Geeft de tijd terug waarop een trein zich aanmeldde in de wachtrij.
+        Wordt gebruikt door compute_fcfs_order in controller.py.
+
+        Parameters
+        ----------
+        train_id   : int — treinnummer
+        segment_id : str — segment
+
+        Returns
+        -------
+        float — tijdstip waarop trein zich aanmeldde in de wachtrij
+        """
+        for entry in self._queue[segment_id]:
+            if entry.train_id == train_id:
+                return entry.planned_time
+        raise KeyError(f"Trein {train_id} staat niet in wachtrij voor '{segment_id}'")
+
     # ==========================================================================
     # Toegangsbeslissing
     # ==========================================================================
