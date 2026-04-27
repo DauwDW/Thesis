@@ -33,7 +33,7 @@ Usage
 
 import time
 from model.instance import build_instance
-from model.solver   import run_solver
+from model.solver   import solve
 
 
 # =============================================================================
@@ -162,7 +162,7 @@ class Controller:
             current_time = current_time,
         )
         # Step 3 — Call the solver
-        solution = run_solver(instance)
+        solution = solve(instance)
 
         # Step 4a — Solver succeeded
         if solution.is_feasible():
