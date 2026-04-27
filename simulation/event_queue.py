@@ -123,15 +123,26 @@ class EventQueue:
     # ------------------------------------------------------------------
     # Basis operaties
     # ------------------------------------------------------------------
-
     def push(self, event: Event) -> None:
         """Voegt een event toe aan de queue."""
+        if event.time == 0.0 and hasattr(event, 'train_id') and event.train_id == 1995:
+            import traceback
+            print(f"[DEBUG] TrainEntered(0.0, 1995) gepusht via:")
+            traceback.print_stack()
         heapq.heappush(self._heap, _HeapEntry(
             time        = event.time,
             tie_breaker = self._counter,
             event       = event,
         ))
         self._counter += 1
+    # def push(self, event: Event) -> None:
+    #     """Voegt een event toe aan de queue."""
+    #     heapq.heappush(self._heap, _HeapEntry(
+    #         time        = event.time,
+    #         tie_breaker = self._counter,
+    #         event       = event,
+    #     ))
+    #     self._counter += 1
 
     def pop(self) -> Event:
         """Verwijdert en geeft het vroegste event terug."""

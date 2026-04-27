@@ -164,27 +164,18 @@ def build_running_time_lookup(passenger_df: pd.DataFrame) -> dict[tuple[str, str
 # =============================================================================
 
 def normalize_to_base_date(passenger_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Vervangt de datumcomponent van PLANNED_DEPARTURE en PLANNED_ARRIVAL door
-    BASE_DATE (2025-01-01), zodat tijden vergelijkbaar zijn met de freight
-    generator die ook op deze basisdatum werkt. De tijdscomponent (klokuur)
-    blijft ongewijzigd.
-
-    Wordt intern aangeroepen door generate_freight_timetable() — hoeft niet
-    expliciet aangeroepen te worden voor opslaan in gold.
-
-    Args:
-        passenger_df: gold passenger timetable
-
-    Returns:
-        Kopie met genormaliseerde PLANNED_DEPARTURE en PLANNED_ARRIVAL
-    """
     df = passenger_df.copy()
     df['PLANNED_DEPARTURE'] = pd.to_datetime(df['PLANNED_DEPARTURE'])
     df['PLANNED_ARRIVAL']   = pd.to_datetime(df['PLANNED_ARRIVAL'])
 
-    for col in ['PLANNED_DEPARTURE', 'PLANNED_ARRIVAL']:
-        df[col] = BASE_DATE + (df[col] - df[col].dt.normalize())
+    # Vroegste tijdstip per trein als referentie
+    first_time = df.groupby('TRAIN_NO')['PLANNED_DEPARTURE'].transform('min')
+    first_date = first_time.dt.normalize()
+
+    offset = BASE_DATE - first_date
+
+    df['PLANNED_DEPARTURE'] = df['PLANNED_DEPARTURE'] + offset
+    df['PLANNED_ARRIVAL']   = df['PLANNED_ARRIVAL']   + offset
 
     return df
 

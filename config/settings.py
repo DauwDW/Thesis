@@ -15,7 +15,7 @@ GOLD_DIR     = Path("/Users/ddw/Desktop/Rescheduling/data/gold")
 # GOLD_DIR     = Path("")
 
 SIMULATION_SEED = 42
-
+HORIZON = 3600
 #FREIGHT SAMPLING parameters
 FREIGHT_RUNNING_TIME_SCALE = 1.3
 

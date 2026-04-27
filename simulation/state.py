@@ -154,52 +154,39 @@ class SystemState:
     # ==========================================================================
 
     def remaining_path(self, train_id: int) -> list[str]:
-        """
-        Geeft de nog af te leggen segmenten voor trein train_id.
+        train = self._trains[train_id]
+        current = self._current_segment[train_id]
+        actual = self._actual[train_id]
 
-        Een segment telt als 'resterend' als de trein het nog niet verlaten
-        heeft (actual_exit is None). Afgeronde segmenten worden weggelaten.
+        if current is None:
+            if not actual:
+                return list(train.path)  # nog niet gestart
+            # Safeguard: check of er nog onafgewerkte segmenten zijn
+            for i, seg in enumerate(train.path):
+                entry, exit_ = actual.get(seg, (None, None))
+                if entry is not None and exit_ is None:
+                    return list(train.path[i:])
+            return []  # effectief klaar
 
-        Treinen die nog niet gestart zijn (lege _actual) krijgen hun
-        volledige pad terug — ze zijn nog niet ingezet maar wél relevant
-        voor conflictdetectie in model/instance.py.
-
-        Parameters
-        ----------
-        train_id : int
-
-        Returns
-        -------
-        list[str] — geordende lijst van resterende segment-ids
-                    leeg als de trein klaar is
-        """
-        train    = self._trains[train_id]
-        segments = self._actual[train_id]
-
-        return [
-            seg_id for seg_id in train.path
-            if segments.get(seg_id, (None, None))[1] is None
-            # exit is None → segment nog niet verlaten (of nog niet betreden)
-        ]
+        try:
+            idx = train.path.index(current)
+            return list(train.path[idx:])
+        except ValueError:
+            return []
 
     def current_delay(self, train_id: int) -> float:
         """
         Geeft de huidige vertraging van trein train_id in seconden.
 
         Vertraging = actuele exit van het laatste verlaten segment
-                   − geplande exit van datzelfde segment.
+                − geplande exit van datzelfde segment.
 
-        Als de trein nog geen enkel segment verlaten heeft (nog niet gestart),
-        is de vertraging 0.0. Negatieve waarden (vroeger dan gepland) worden
-        afgekapt op 0.0.
+        Afgekapt op 0.0: within-station-passing treinen kunnen vroeger
+        dan gepland vertrekken (C2 geldt enkel bij h_stop=1), maar een
+        negatieve offset telt als 0 vertraging voor de trigger-logica.
+        Gebruik actual_exit() direct voor de ruwe offset.
 
-        Parameters
-        ----------
-        train_id : int
-
-        Returns
-        -------
-        float — vertraging in seconden (0.0 als trein nog niet gestart)
+        Returns 0.0 als de trein nog geen enkel segment verlaten heeft.
         """
         train    = self._trains[train_id]
         segments = self._actual[train_id]
@@ -251,9 +238,6 @@ class SystemState:
     def actual_entry(self, train_id: int, segment_id: str) -> float:
         """
         Actuele entrytijd (A_t,s) van trein train_id op segment segment_id.
-
-        Naam afgestemd met partner: model/instance.py en controller/controller.py
-        gebruiken state.actual_entry() (niet actual_arrival).
 
         Parameters
         ----------

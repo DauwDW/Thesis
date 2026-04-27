@@ -163,7 +163,7 @@ class Simulator:
         n_processed = 0
 
         while self._queue:
-            event = self._queue.pop()
+            event = self._queue.pop()                
             self._state.advance_time(event.time)
 
             if isinstance(event, TrainEntered):
@@ -242,11 +242,11 @@ class Simulator:
     def _handle_exited(self, event: TrainExited) -> None:
         """
         Verwerkt een TrainExited-event:
-          1. Geef segment vrij in dispatcher
-          2. Registreer exit in SystemState
-          3. Plan TrainEntered voor volgend segment op geplande tijd
-             (enkel als nog niet gepland via _apply_solution)
-          4. Roep controller aan en verwerk resultaat
+        1. Geef segment vrij in dispatcher
+        2. Registreer exit in SystemState
+        3. Roep controller aan en verwerk resultaat
+        4. Plan TrainEntered voor volgend segment op geplande tijd
+            (na _apply_solution, enkel als nog niet gepland)
         """
         # 1. Dispatcher: segment vrijgeven
         self._dispatcher.release(event.train_id, event.segment_id)
@@ -258,37 +258,25 @@ class Simulator:
             time       = event.time,
         )
 
-        # 3. Volgend segment plannen
-        next_seg = self._next_segment(event.train_id, event.segment_id)
+        # 3. Controller aanroepen en resultaat verwerken
+        result = self._controller.step(self._state, event.time)
+        if result.action == "rescheduled":
+            self._apply_solution(result.solution)
+        elif result.action == "fcfs_fallback":
+            self._dispatcher.reorder(result.fcfs_order)
 
+        # 4. Volgend segment plannen (na _apply_solution)
+        next_seg = self._next_segment(event.train_id, event.segment_id)
         if next_seg is not None:
             planned_entry = self._timetable.scheduled_arrival(event.train_id, next_seg)
-
-            # Als de trein vertraging heeft opgelopen, ligt de geplande entrytijd
-            # mogelijk in het verleden — gebruik dan de huidige simulatietijd.
-            # De dispatcher krijgt planned_entry (voor volgorde), de queue krijgt
-            # actual_entry (zodat advance_time nooit achteruit gaat).
-            actual_entry = max(planned_entry, self._state.current_time)
-
-            # Aanmelden in dispatcher op geplande tijd (voor volgorde)
+            actual_entry  = max(planned_entry, self._state.current_time)
             self._dispatcher.enqueue(event.train_id, next_seg, planned_entry)
-
-            # TrainEntered plannen op actual_entry (nooit in het verleden)
             if not self._queue.has_entered(event.train_id, next_seg):
                 self._queue.push(TrainEntered(
                     time       = actual_entry,
                     train_id   = event.train_id,
                     segment_id = next_seg,
                 ))
-
-        # 4. Controller aanroepen en resultaat verwerken
-        result = self._controller.step(self._state, event.time)
-
-        if result.action == "rescheduled":
-            self._apply_solution(result.solution)
-        elif result.action == "fcfs_fallback":
-            self._dispatcher.reorder(result.fcfs_order)
-        # "skipped" → geen actie
 
     # ==========================================================================
     # Hulp: volgend segment
@@ -337,98 +325,163 @@ class Simulator:
     # MIP-oplossing toepassen
     # ==========================================================================
 
+    # def _apply_solution(self, solution) -> None:
+    #     """
+    #     Verwerkt een MIP-oplossing in de EventQueue en Dispatcher.
+
+    #     Voor elk (train_id, segment_id) in de oplossing:
+    #     - Segmenten waarvoor al een actual_entry geregistreerd is worden
+    #         nooit aangeraakt (afgerond of momenteel actief).
+    #     - Bestaande toekomstige events worden geannuleerd via cancel().
+    #     - Nieuwe events worden gepusht op de MIP-tijden.
+    #     - Dispatcher wordt herordend via reorder().
+
+    #     Parameters
+    #     ----------
+    #     solution : Solution — output van model/solution.py
+    #     """
+    #     to_reschedule: set[tuple[int, str]] = set()
+
+    #     for (train_id, segment_id), new_entry_time in solution.arrival.items():
+    #         if train_id not in self._trains:
+    #             continue
+
+    #         # Segment al gestart (actief of afgerond) — niet aanraken
+    #         try:
+    #             self._state.actual_entry(train_id, segment_id)
+    #             continue
+    #         except KeyError:
+    #             pass
+
+    #         new_exit_time = solution.departure.get((train_id, segment_id))
+    #         if new_exit_time is None:
+    #             continue
+
+    #         to_reschedule.add((train_id, segment_id))
+
+    #     if not to_reschedule:
+    #         return
+
+    #     # Annuleer bestaande events en push nieuwe op MIP-tijden
+    #     for (train_id, segment_id) in to_reschedule:
+    #         new_entry_time = solution.arrival[(train_id, segment_id)]
+    #         new_exit_time  = solution.departure[(train_id, segment_id)]
+
+    #         # Verwijder bestaande events
+    #         self._queue.cancel(train_id, segment_id)
+
+    #         # TrainEntered op MIP-tijd
+    #         self._queue.push(TrainEntered(
+    #             time       = new_entry_time,
+    #             train_id   = train_id,
+    #             segment_id = segment_id,
+    #         ))
+
+    #         # TrainExited op MIP-tijd
+    #         self._queue.push(TrainExited(
+    #             time       = new_exit_time,
+    #             train_id   = train_id,
+    #             segment_id = segment_id,
+    #         ))
+
+    #     # Herorden dispatcher op basis van MIP-volgorde
+    #     seg_order: dict[str, list[tuple[float, int]]] = {}
+    #     for (train_id, segment_id) in to_reschedule:
+    #         entry_time = solution.arrival[(train_id, segment_id)]
+    #         seg_order.setdefault(segment_id, []).append((entry_time, train_id))
+
+    #     reorder_dict = {
+    #         seg_id: [t_id for _, t_id in sorted(entries)]
+    #         for seg_id, entries in seg_order.items()
+    #     }
+    #     self._dispatcher.reorder(reorder_dict)
+
+    #     logger.debug(
+    #         f"apply_solution: {len(to_reschedule)} (trein, segment) paren herbouwd"
+    #     )
+    # # ==========================================================================
+    # # Diagnostiek
+    # # ==========================================================================
+
+    # def __repr__(self) -> str:
+    #     return (
+    #         f"Simulator("
+    #         f"treinen={len(self._trains)}, "
+    #         f"queue={len(self._queue)} events, "
+    #         f"state={self._state.summary()}, "
+    #         f"dispatcher={self._dispatcher})"
+    #     )
     def _apply_solution(self, solution) -> None:
-        """
-        Verwerkt een MIP-oplossing in de EventQueue en Dispatcher.
 
-        Voor elk (train_id, segment_id) in de oplossing:
-          - Segmenten waarvoor al een actual_exit geregistreerd is worden
-            nooit aangeraakt.
-          - Bestaande toekomstige events worden geannuleerd via cancel().
-          - Nieuwe events worden gepusht op de MIP-tijden.
-          - Dispatcher wordt herordend via reorder().
+        current_time = self._state.current_time
+        to_reschedule = []
 
-        Parameters
-        ----------
-        solution : Solution — output van model/solution.py
-        """
-        to_reschedule: set[tuple[int, str]] = set()
+        # ==========================================================
+        # 1. FILTER geldig
+        # ==========================================================
+        for (train_id, segment_id), mip_entry in solution.arrival.items():
 
-        for (train_id, segment_id), new_entry_time in solution.arrival.items():
             if train_id not in self._trains:
                 continue
 
-            # Segment al afgerond — niet aanraken
+            # skip als al gestart
             try:
-                self._state.actual_exit(train_id, segment_id)
+                self._state.actual_entry(train_id, segment_id)
                 continue
             except KeyError:
                 pass
 
-            new_exit_time = solution.departure.get((train_id, segment_id))
-            if new_exit_time is None:
+            mip_exit = solution.departure.get((train_id, segment_id))
+            if mip_exit is None:
                 continue
 
-            to_reschedule.add((train_id, segment_id))
+            # 🔥 FORCE NO PAST
+            safe_entry = max(mip_entry, current_time)
+
+            # 🔥 GEEN exit pushen → simulator bepaalt die
+            to_reschedule.append((train_id, segment_id, safe_entry))
 
         if not to_reschedule:
             return
 
-        # Annuleer bestaande events en push nieuwe op MIP-tijden
-        for (train_id, segment_id) in to_reschedule:
-            new_entry_time = solution.arrival[(train_id, segment_id)]
-            new_exit_time  = solution.departure[(train_id, segment_id)]
-
-            # Verwijder bestaande events
+        # ==========================================================
+        # 2. CANCEL ALLES VEILIG
+        # ==========================================================
+        for train_id, segment_id, _ in to_reschedule:
             self._queue.cancel(train_id, segment_id)
 
-            # TrainEntered alleen als entry nog niet geregistreerd is
-            try:
-                self._state.actual_entry(train_id, segment_id)
-            except KeyError:
-                self._queue.push(TrainEntered(
-                    time       = new_entry_time,
-                    train_id   = train_id,
-                    segment_id = segment_id,
-                ))
+        # ==========================================================
+        # 3. PUSH ALLEEN ENTRY EVENTS
+        # ==========================================================
+        for train_id, segment_id, safe_entry in to_reschedule:
 
-            # TrainExited altijd op MIP-tijd
-            self._queue.push(TrainExited(
-                time       = new_exit_time,
+            if safe_entry <= 0:
+                print(f"🚨 SKIP zero entry: {train_id}, {segment_id}")
+                continue
+
+            self._queue.push(TrainEntered(
+                time       = safe_entry,
                 train_id   = train_id,
                 segment_id = segment_id,
             ))
 
-        # Herorden dispatcher op basis van MIP-volgorde
-        # Bouw volgorde per segment op basis van MIP entry-tijden
-        seg_order: dict[str, list[tuple[float, int]]] = {}
-        for (train_id, segment_id) in to_reschedule:
-            entry_time = solution.arrival[(train_id, segment_id)]
-            seg_order.setdefault(segment_id, []).append((entry_time, train_id))
+        # ==========================================================
+        # 4. DISPATCHER CONSISTENT MAKEN
+        # ==========================================================
+        seg_order = {}
+
+        for train_id, segment_id, safe_entry in to_reschedule:
+            seg_order.setdefault(segment_id, []).append((safe_entry, train_id))
 
         reorder_dict = {
-            seg_id: [t_id for _, t_id in sorted(entries)]
-            for seg_id, entries in seg_order.items()
+            seg: [t for _, t in sorted(entries)]
+            for seg, entries in seg_order.items()
         }
-        self._dispatcher.reorder(reorder_dict)
 
-        logger.debug(
-            f"apply_solution: {len(to_reschedule)} (trein, segment) paren herbouwd"
-        )
+        if reorder_dict:
+            self._dispatcher.reorder(reorder_dict)
 
-    # ==========================================================================
-    # Diagnostiek
-    # ==========================================================================
-
-    def __repr__(self) -> str:
-        return (
-            f"Simulator("
-            f"treinen={len(self._trains)}, "
-            f"queue={len(self._queue)} events, "
-            f"state={self._state.summary()}, "
-            f"dispatcher={self._dispatcher})"
-        )
-
+        print(f"[DEBUG] apply_solution: {len(to_reschedule)} updates toegepast")
 
 
 # =============================================================================
