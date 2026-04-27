@@ -91,6 +91,7 @@ class PeriodicTrigger(BaseTrigger):
     def __init__(self, periodic_freq: float):
         super().__init__()
         self.periodic_freq = periodic_freq
+        self._last_reschedule_time = 0.0
 
     def should_reschedule(self, state, current_time: float) -> bool:
         return self._time_since_reschedule(current_time) >= self.periodic_freq
