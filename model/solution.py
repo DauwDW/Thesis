@@ -53,7 +53,7 @@ class Solution:
     def is_feasible(self): #Returns True if the solver found a feasible solution (both optimal or not)
         return self.status in ("optimal", "timeout")
 
-    def __repr__(self): # toont hoe Solution object eruitziet als je het print
+    def __repr__(self):
         obj_str = f"{self.objective:.2f}" if self.objective is not None else "None"
         return (
             f"Solution(status={self.status}, "
