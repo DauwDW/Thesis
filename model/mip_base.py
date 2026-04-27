@@ -168,6 +168,8 @@
 #     model.optimize()
 
 #     return model, a, d, delta, y, C, final_seg
+
+# Pas nog aan zodat deze C meekrijgt van instance
 import gurobipy as gp
 from gurobipy import GRB
 
@@ -188,6 +190,7 @@ def build_and_solve_model(
     h_stop,
     w,
     L,
+    C=None,
     in_execution=None,
     fix_arrival=None,
     M=None,
@@ -215,14 +218,13 @@ def build_and_solve_model(
     # ==========================================================
     TS = [(t, s) for t in T for s in path[t]]
 
-    C = {}
-    for s in S:
-        trains_on_s = [t for t in T if s in path[t]]
-        C[s] = [
-            (trains_on_s[a], trains_on_s[b])
-            for a in range(len(trains_on_s))
-            for b in range(a + 1, len(trains_on_s))
-        ]
+    if C is None:
+        C = {}
+        for s in S:
+            trains_on_s = [t for t in T if s in path[t]]
+            C[s] = [(trains_on_s[a], trains_on_s[b])
+                    for a in range(len(trains_on_s))
+                    for b in range(a + 1, len(trains_on_s))]
 
     final_seg = {t: path[t][-1] for t in T}
 
@@ -233,7 +235,7 @@ def build_and_solve_model(
     ]
 
     # ==========================================================
-    # 🔥 VALIDATE fix_arrival (CRUCIAAL)
+    # VALIDATE fix_arrival 
     # ==========================================================
     if current_time is not None:
         for (t, s), time in fix_arrival.items():
@@ -307,7 +309,7 @@ def build_and_solve_model(
 
     for t, s, s_next in consecutive_pairs:
         model.addConstr(
-            a[t, s_next] >= d[t, s],
+            a[t, s_next] >= d[t, s],    # Hier wordt >= gebruikt voor wiskunde flexibiliteit, in simulatie wordt = gebruikt
             name=f"C1c_{t}_{s}_{s_next}"
         )
 
@@ -335,6 +337,7 @@ def build_and_solve_model(
     # ==========================================================
     # C4 — Conflicts
     # ==========================================================
+    # Headways zijn hier weggelaten
     for s in S:
         for i, j in C[s]:
 
