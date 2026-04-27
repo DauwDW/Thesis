@@ -20,7 +20,7 @@ class Solution:
     runtime         : float — solver runtime in seconds
     arrival         : dict  — {(train_id, segment_id): arrival time}
     departure       : dict  — {(train_id, segment_id): departure time}
-    delay           : dict  — {(train_id, segment_id): delay in minutes}
+    delay           : dict  — {(train_id, segment_id): delay in seconds}
     ordering        : dict  — {(i, j, segment_id): 1 if i before j, 0 otherwise}
     """
 
@@ -57,7 +57,7 @@ class Solution:
         obj_str = f"{self.objective:.2f}" if self.objective is not None else "None"
         return (
             f"Solution(status={self.status}, "
-            f"objective={self.objective:.2f}, "
+            f"objective={obj_str}, "
             f"runtime={self.runtime:.2f}s)")
 
 

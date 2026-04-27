@@ -41,7 +41,7 @@ class ScheduledTimes:
     halts:         bool  | None
 
     def __post_init__(self) -> None:
-        if self.exit_seconds <= self.entry_seconds:
+        if self.exit_seconds < self.entry_seconds:
             raise ValueError(
                 f"exit_seconds ({self.exit_seconds}) moet groter zijn dan "
                 f"entry_seconds ({self.entry_seconds})"

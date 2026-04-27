@@ -40,40 +40,32 @@ from model.solver   import run_solver
 # FCFS fallback
 # =============================================================================
 
-def compute_fcfs_order(state, segments):
-    """
-    Computes First-Come-First-Served ordering per segment.
+def compute_fcfs_order(state, segments: dict) -> dict:
+    active_ids = state.active_train_ids()
+    remaining  = {t_id: set(state.remaining_path(t_id)) for t_id in active_ids}
 
-    For each segment, trains are ordered by their actual arrival time —
-    the train that arrived first gets priority.
-
-    Parameters
-    ----------
-    state    : SystemState   — current simulation state (partner's code)
-    segments : list[Segment] — all Segment objects
-
-    Returns
-    -------
-    dict {segment_id: [train_ids sorted by actual arrival time]}
-    """
     fcfs = {}
-
-    for seg in segments:
-        # state.active_train_ids() — VAN DAUWS SystemState
-        # state.remaining_path(train_id) — VAN DAUWS SystemState
+    for seg_id in segments:
         trains_on_seg = [
-            t_id for t_id in state.active_train_ids()
-            if seg in state.remaining_path(t_id)
+            t_id for t_id in active_ids
+            if seg_id in remaining[t_id]
         ]
+        if not trains_on_seg:
+            continue
 
-        # state.actual_arrival(train_id, seg.id) — VAN DAUWS SystemState
-        # confirm exact method name!!!!
-        fcfs[seg] = sorted(
-            trains_on_seg,
-            key=lambda t_id: state.actual_entry(t_id, seg)
-        )
+        # Sorteer enkel op actual_entry — treinen zonder entry horen hier niet thuis
+        entered = []
+        for t_id in trains_on_seg:
+            try:
+                entry = state.actual_entry(t_id, seg_id)
+                entered.append((entry, t_id))
+            except KeyError:
+                pass  # nog niet op dit segment — niet opnemen in FCFS
+
+        fcfs[seg_id] = [t_id for _, t_id in sorted(entered)]
 
     return fcfs
+
 
 # =============================================================================
 # Controller result
@@ -85,9 +77,9 @@ class ControllerResult:
 
     Attributes
     ----------
-    action      : str   — one of 'rescheduled', 'fcfs_fallback', 'skipped'
-    solution    : Solution or None — MILP solution if solver was called and succeeded
-    fcfs_order  : list or None     — FCFS train ordering if solver failed or was skipped
+    action      : str              — one of 'rescheduled', 'fcfs_fallback', 'skipped'
+    solution    : Solution or None — MILP solution if solver succeeded
+    fcfs_order  : dict or None     — FCFS train ordering if solver failed
     runtime     : float            — time spent in this controller step (seconds)
     """
 
@@ -98,10 +90,7 @@ class ControllerResult:
         self.runtime    = runtime
 
     def __repr__(self):
-        return (
-            f"ControllerResult(action={self.action}, "
-            f"runtime={self.runtime:.3f}s)"
-        )
+        return f"ControllerResult(action={self.action}, runtime={self.runtime:.3f}s)"
 
 
 # =============================================================================
@@ -114,25 +103,24 @@ class Controller:
 
     Parameters
     ----------
-    trigger   : BaseTrigger  — decides when to invoke the solver
-    trains    : list[Train]  — all Train objects (passed to instance builder)
-    segments  : list[Segment]— all Segment objects (passed to instance builder)
-    timetable : Timetable    — original scheduled times (passed to instance builder)
+    trigger   : BaseTrigger        — decides when to invoke the solver
+    trains    : dict[int, Train]   — all Train objects
+    segments  : dict[str, Segment] — all Segment objects
+    timetable : Timetable          — original scheduled times
     """
 
     def __init__(self, trigger, trains, segments, timetable):
-        self.trigger   = trigger #periodic, event-driven of hybrid
+        self.trigger   = trigger
         self.trains    = trains
         self.segments  = segments
         self.timetable = timetable
 
-        # Simple counters for logging/reporting
-        self._n_rescheduled   = 0   # number of times solver was called and succeeded
-        self._n_fcfs_fallback = 0   # number of times FCFS fallback was used
-        self._n_skipped       = 0   # number of times trigger said no
+        self._n_rescheduled   = 0
+        self._n_fcfs_fallback = 0
+        self._n_skipped       = 0
 
     # ------------------------------------------------------------------
-    # Main entry point — called by the simulator at each trigger check
+    # Main entry point — called by the simulator after each TrainExited
     # ------------------------------------------------------------------
 
     def step(self, state, current_time: float) -> ControllerResult:
@@ -157,25 +145,24 @@ class Controller:
             self._log(current_time, "SKIPPED", "trigger did not fire")
             return ControllerResult(
                 action  = "skipped",
-                runtime = time.time() - step_start
+                runtime = time.time() - step_start,
             )
 
         # Step 2 — Trigger fired: build MILP instance
         self._log(current_time, "TRIGGERED", "building instance...")
 
         instance = build_instance(
-            state     = state,
-            timetable = self.timetable,
-            trains    = self.trains,
-            segments  = self.segments,
-            current_time = current_time
+            state        = state,
+            timetable    = self.timetable,
+            trains       = self.trains,
+            segments     = self.segments,
+            current_time = current_time,
         )
-
         # Step 3 — Call the solver
         solution = run_solver(instance)
 
-        # Step 4a — Solver succeeded: return solution
-        if solution.is_feasible(): # True wanneer status = optimal of timeout (van in solution.py)
+        # Step 4a — Solver succeeded
+        if solution.is_feasible():
             self.trigger.notify_rescheduled(current_time)
             self._n_rescheduled += 1
             self._log(
@@ -183,13 +170,14 @@ class Controller:
                 "RESCHEDULED",
                 f"status={solution.status}, "
                 f"objective={solution.objective:.2f}, "
-                f"solver_runtime={solution.runtime:.2f}s"
+                f"solver_runtime={solution.runtime:.2f}s",
             )
             return ControllerResult(
                 action  = "rescheduled",
                 solution= solution,
-                runtime = time.time() - step_start
+                runtime = time.time() - step_start,
             )
+
         # Step 4b — Solver failed: fall back to FCFS
         self.trigger.notify_evaluated(current_time)
         self._n_fcfs_fallback += 1
@@ -197,12 +185,12 @@ class Controller:
         self._log(
             current_time,
             "FCFS_FALLBACK",
-            f"solver status={solution.status}, falling back to FCFS"
+            f"solver status={solution.status}, falling back to FCFS",
         )
         return ControllerResult(
             action     = "fcfs_fallback",
             fcfs_order = fcfs_order,
-            runtime    = time.time() - step_start
+            runtime    = time.time() - step_start,
         )
 
     # ------------------------------------------------------------------
@@ -210,22 +198,13 @@ class Controller:
     # ------------------------------------------------------------------
 
     def _log(self, current_time: float, event: str, message: str):
-        """
-        Logs an important controller event to the console.
-        Format: [t=Xs] EVENT — message
-        Will be extended to write to utils/logger.py later.
-        """
         print(f"[t={current_time:.0f}s] {event} — {message}")
 
     # ------------------------------------------------------------------
-    # Summary stats (useful for experiments)
+    # Summary stats
     # ------------------------------------------------------------------
 
     def summary(self) -> dict:
-        """
-        Returns a summary of controller activity.
-        Useful for saving experiment results.
-        """
         return {
             "n_rescheduled"   : self._n_rescheduled,
             "n_fcfs_fallback" : self._n_fcfs_fallback,
