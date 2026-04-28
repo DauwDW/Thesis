@@ -17,9 +17,9 @@ uit reality/sampling.py.
 
 Verantwoordelijkheid caller (controller.py)
 -------------------------------------------
-Na elke evaluatie (ook als should_reschedule False teruggeeft) moet de caller
-notify_evaluated() aanroepen. Na een effectieve reschedule moet notify_rescheduled()
-aangeroepen worden. Zonder deze aanroepen werken de frequentiedrempels niet correct.
+Na een effectieve reschedule moet notify_rescheduled() aangeroepen worden.
+notify_evaluated() wordt intern beheerd door de trigger zelf — de caller
+hoeft dit niet aan te roepen.
 """
 
 from __future__ import annotations
@@ -51,11 +51,9 @@ class BaseTrigger:
 
     Verantwoordelijkheid caller
     ---------------------------
-    - notify_evaluated(current_time) aanroepen na elke evaluatie
-      (ook als should_reschedule False teruggeeft).
     - notify_rescheduled(current_time) aanroepen na elke effectieve reschedule.
-    Zonder deze aanroepen werken de frequentiedrempels (controller_freq,
-    event_driven_freq) niet correct.
+    - notify_evaluated() wordt intern beheerd door elke subklasse in
+      should_reschedule() — de caller hoeft dit niet aan te roepen.
     """
 
     def __init__(self):
@@ -94,7 +92,9 @@ class PeriodicTrigger(BaseTrigger):
         self._last_reschedule_time = 0.0
 
     def should_reschedule(self, state, current_time: float) -> bool:
-        return self._time_since_reschedule(current_time) >= self.periodic_freq
+        result = self._time_since_reschedule(current_time) >= self.periodic_freq
+        self.notify_evaluated(current_time)
+        return result
 
     def __repr__(self):
         return f"PeriodicTrigger(periodic_freq={self.periodic_freq}s)"
@@ -164,7 +164,10 @@ class EventDrivenTrigger(BaseTrigger):
             return False
         if self._time_since_evaluation(current_time) < self.controller_freq:
             return False
-        return self._estimate_confidence(state, current_time) >= self.threshold_confidence
+        # Monte Carlo draait pas hier — notify_evaluated pas resetten na de MC
+        result = self._estimate_confidence(state, current_time) >= self.threshold_confidence
+        self.notify_evaluated(current_time)
+        return result
 
     # ------------------------------------------------------------------
     # Monte Carlo

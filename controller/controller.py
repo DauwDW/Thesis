@@ -143,7 +143,6 @@ class Controller:
 
         # Step 1 — Ask the trigger
         if not self.trigger.should_reschedule(state, current_time):
-            self.trigger.notify_evaluated(current_time)
             self._n_skipped += 1
             self._log(current_time, "SKIPPED", "trigger did not fire")
             return ControllerResult(
@@ -182,7 +181,6 @@ class Controller:
             )
 
         # Step 4b — Solver failed: fall back to FCFS
-        self.trigger.notify_evaluated(current_time)
         self._n_fcfs_fallback += 1
         fcfs_order = compute_fcfs_order(state, self.segments)
         self._log(
