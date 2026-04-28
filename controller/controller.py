@@ -112,11 +112,13 @@ class Controller:
     timetable : Timetable          — original scheduled times
     """
 
-    def __init__(self, trigger, trains, segments, timetable):
+    def __init__(self, trigger, trains, segments, timetable, priority_strategy):
         self.trigger   = trigger
         self.trains    = trains
         self.segments  = segments
         self.timetable = timetable
+        self.priority_strategy = priority_strategy  # "static" or "dynamic"
+
 
         self._n_rescheduled   = 0
         self._n_fcfs_fallback = 0
@@ -161,7 +163,7 @@ class Controller:
             current_time = current_time,
         )
         # Step 3 — Call the solver
-        solution = solve(instance)
+        solution = solve(instance, priority_strategy=self.priority_strategy)
 
         # Step 4a — Solver succeeded
         if solution.is_feasible():
@@ -217,6 +219,7 @@ class Controller:
         return (
             f"Controller("
             f"trigger={self.trigger}, "
+            f"priority_strategy={self.priority_strategy}, "
             f"rescheduled={self._n_rescheduled}, "
             f"fcfs={self._n_fcfs_fallback}, "
             f"skipped={self._n_skipped})"
