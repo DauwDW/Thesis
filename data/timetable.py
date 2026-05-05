@@ -1,32 +1,10 @@
-# data/timetable.py
-#
-# Tijdsconventie — consistent voor ALLE segmenttypes (between-station en dwell):
-#
-#   ENTRY_SECONDS = moment trein segment binnenkomt  = A_t,s in MIP  (vroeger)
-#   EXIT_SECONDS  = moment trein segment verlaat      = D_t,s in MIP  (later)
-#   → altijd ENTRY_SECONDS < EXIT_SECONDS
-#
-# Voor BETWEEN-STATION (A → B):
-#   ENTRY_SECONDS = trein vertrekt uit station A  (= PLANNED_DEPARTURE in brondata)
-#   EXIT_SECONDS  = trein arriveert in station B  (= PLANNED_ARRIVAL in brondata)
-#
-# Voor DWELL (X → X):
-#   ENTRY_SECONDS = trein arriveert in station X  (= PLANNED_ARRIVAL in brondata)
-#   EXIT_SECONDS  = trein vertrekt uit station X  (= PLANNED_DEPARTURE in brondata)
-#   → in de brondata zijn PLANNED_DEPARTURE en PLANNED_ARRIVAL semantisch omgewisseld
-#     tov between-station; add_time_in_seconds corrigeert dit expliciet.
-#
-# Mapping naar MIP-variabelen in instance.py:
-#   A_t,s = ENTRY_SECONDS
-#   D_t,s = EXIT_SECONDS
-
 import logging
 from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
 
-from config.settings import BRONZE_DIR, GOLD_DIR
+from config.settings import BRONZE_DIR, GOLD_DIR, PASSING_DURATION_PASSENGER
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +42,7 @@ def get_main_timetable(train_no: int, df: pd.DataFrame) -> pd.DataFrame:
     for date in train['DATDEP'].unique():
         timetable = train[train['DATDEP'] == date][
             ['SECTION', 'SOURCE', 'TARGET',
-             'PLANNED_DEPARTURE', 'PLANNED_ARRIVAL',
+             'PLANNED_ENTRY', 'PLANNED_EXIT',
              'RELATION_DIRECTION']
         ].reset_index(drop=True)
 
@@ -90,8 +68,7 @@ def build_planned_timetable(df: pd.DataFrame, min_frequency: float = 0.85) -> pd
 
     SECTION-conventie:
         Between-station: {LINE_NO_DEP}:{SOURCE}-{TARGET}  (lijncode relevant)
-        Dwell:           {SOURCE}                          (lijncode zinloos —
-                             zelfde fysiek station ongeacht binnenkomende lijn)
+        Dwell:           {SOURCE}                          (lijncode zinloos)
 
     Args:
         df:            gecombineerde bronze DataFrame
@@ -128,55 +105,75 @@ def build_planned_timetable(df: pd.DataFrame, min_frequency: float = 0.85) -> pd
 # Tijdsconversie
 # =============================================================================
 
-
-
-
 def add_time_in_seconds(df: pd.DataFrame) -> pd.DataFrame:
     """
     Converteert geplande tijden naar seconden relatief aan vroegste entry.
 
-    Conventie (zie module-docstring):
+    Geen swap nodig — PLANNED_ENTRY <= PLANNED_EXIT altijd.
+
+    Conventie:
         ENTRY_SECONDS = A_t,s = moment binnenkomst segment  (vroeger)
         EXIT_SECONDS  = D_t,s = moment verlaten segment     (later)
-        → altijd ENTRY_SECONDS =< EXIT_SECONDS
-
-    Voor dwell-segmenten (SOURCE == TARGET):
-        Normaal: PLANNED_DEPARTURE = verlaten station (later)
-                 PLANNED_ARRIVAL   = binnenkomen station (vroeger)
-                 → swap nodig
-        Uitzondering middernacht: PLANNED_DEPARTURE = 23:54 (dag 1)
-                                  PLANNED_ARRIVAL   = 00:10 (dag 2)
-                                  → PLANNED_DEPARTURE al vroeger → geen swap nodig
-
-        Oplossing: swap enkel als PLANNED_DEPARTURE > PLANNED_ARRIVAL.
-
-    Na deze functie worden PLANNED_DEPARTURE en PLANNED_ARRIVAL
-    niet meer gebruikt. Alle verdere verwerking gebruikt
-    ENTRY_SECONDS en EXIT_SECONDS.
     """
     df = df.copy()
-    df['PLANNED_DEPARTURE'] = pd.to_datetime(df['PLANNED_DEPARTURE'])
-    df['PLANNED_ARRIVAL']   = pd.to_datetime(df['PLANNED_ARRIVAL'])
+    df['PLANNED_ENTRY'] = pd.to_datetime(df['PLANNED_ENTRY'])
+    df['PLANNED_EXIT']  = pd.to_datetime(df['PLANNED_EXIT'])
 
-    dwell_mask = df['SOURCE'] == df['TARGET']
+    min_entry = df['PLANNED_ENTRY'].min()
+    df['ENTRY_SECONDS'] = (df['PLANNED_ENTRY'] - min_entry).dt.total_seconds()
+    df['EXIT_SECONDS']  = (df['PLANNED_EXIT']  - min_entry).dt.total_seconds()
 
-    # Swap enkel voor dwell-segmenten waar PLANNED_DEPARTURE > PLANNED_ARRIVAL
-    # (= normale dwell waarbij brondata semantiek omgekeerd is)
-    # Middernachtsdwells hebben PLANNED_DEPARTURE < PLANNED_ARRIVAL → geen swap
-    needs_swap = dwell_mask & (df['PLANNED_DEPARTURE'] > df['PLANNED_ARRIVAL'])
+    return df
 
-    df['_entry'] = df['PLANNED_DEPARTURE']
-    df['_exit']  = df['PLANNED_ARRIVAL']
 
-    df.loc[needs_swap, '_entry'] = df.loc[needs_swap, 'PLANNED_ARRIVAL']
-    df.loc[needs_swap, '_exit']  = df.loc[needs_swap, 'PLANNED_DEPARTURE']
+def sort_timetable(df: pd.DataFrame, time_col: str = 'ENTRY_SECONDS') -> pd.DataFrame:
+    """
+    Sorteert de timetable zodat segmenten chronologisch correct staan per trein.
 
-    min_entry = df['_entry'].min()
-    df['ENTRY_SECONDS'] = (df['_entry'] - min_entry).dt.total_seconds()
-    df['EXIT_SECONDS']  = (df['_exit']  - min_entry).dt.total_seconds()
+    Bij gelijke tijden krijgt SOURCE altijd voorrang, daarna WITHIN-STATION-*,
+    dan BETWEEN-STATION — zodat passing-segmenten altijd vóór het vertrekkende
+    between-station segment staan.
 
-    return df.drop(columns=['_entry', '_exit'])
+    Args:
+        time_col: kolom om op te sorteren — standaard 'ENTRY_SECONDS'.
+    """
+    type_order = {
+        'SOURCE':                 0,
+        'WITHIN-STATION-DWELL':   1,
+        'WITHIN-STATION-PASSING': 1,
+        'BETWEEN-STATION':        2,
+    }
+    df = df.copy()
+    df['_sort_key'] = df['TYPE'].map(type_order)
+    df = df.sort_values(
+        ['TRAIN_NO', time_col, '_sort_key']
+    ).drop(columns='_sort_key').reset_index(drop=True)
+    return df
 
+
+def add_passing_time(df: pd.DataFrame) -> pd.DataFrame:
+    df = sort_timetable(df.copy())
+
+    passing_mask = df['TYPE'] == 'WITHIN-STATION-PASSING'
+
+    # 1. Geef passing duur
+    df.loc[passing_mask, 'EXIT_SECONDS'] += PASSING_DURATION_PASSENGER
+    df.loc[passing_mask, 'PLANNED_EXIT'] += pd.Timedelta(seconds=PASSING_DURATION_PASSENGER)
+
+
+    # 2. Binnen elke trein: markeer "vorige was passing"
+    prev_was_passing = (
+        df.groupby('TRAIN_NO')['TYPE']
+        .shift(1)
+        .eq('WITHIN-STATION-PASSING')
+    )
+
+    # 3. Shift ENTRY van volgende segment
+    df.loc[prev_was_passing, 'ENTRY_SECONDS'] += PASSING_DURATION_PASSENGER
+    df.loc[prev_was_passing, 'PLANNED_ENTRY'] += pd.Timedelta(seconds=PASSING_DURATION_PASSENGER)
+
+
+    return sort_timetable(df, time_col='ENTRY_SECONDS')
 
 # =============================================================================
 # Periode
@@ -184,17 +181,14 @@ def add_time_in_seconds(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_period(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Voegt dagperiode toe per segment op basis van absolute geplande tijd.
-
+    Voegt dagperiode toe per segment op basis van geplande aankomsttijd (PLANNED_EXIT).
     Moet aangeroepen worden VOOR add_time_in_seconds.
     """
     df = df.copy()
-
-    df['PLANNED_ARRIVAL'] = pd.to_datetime(df['PLANNED_ARRIVAL'])
+    df['PLANNED_EXIT'] = pd.to_datetime(df['PLANNED_EXIT'])
 
     def get_period(dt: pd.Timestamp) -> str:
         hour = dt.hour
-
         if 0 <= hour < 6:
             return 'NIGHT'
         elif 6 <= hour < 9:
@@ -206,8 +200,7 @@ def add_period(df: pd.DataFrame) -> pd.DataFrame:
         else:
             return 'EVENING'
 
-    df['PERIOD'] = df['PLANNED_ARRIVAL'].apply(get_period)
-
+    df['PERIOD'] = df['PLANNED_EXIT'].apply(get_period)
     return df
 
 
@@ -220,18 +213,19 @@ def add_segment_type(df: pd.DataFrame) -> pd.DataFrame:
     Classificeert elk segment als SOURCE, BETWEEN-STATION,
     WITHIN-STATION-PASSING of WITHIN-STATION-DWELL.
 
-    Werkt op originele PLANNED_DEPARTURE / PLANNED_ARRIVAL datetime kolommen.
-    Moet aangeroepen worden VOOR add_time_in_seconds zodat de ruwe tijden
-    nog beschikbaar zijn voor de duurberekening.
+    Werkt op PLANNED_ENTRY / PLANNED_EXIT datetime kolommen.
+    Moet aangeroepen worden VOOR add_time_in_seconds.
+
+    PLANNED_ENTRY <= PLANNED_EXIT altijd — geen abs() nodig.
+    Duur = 0: passing. Duur > 5s: dwell.
     """
     df = df.copy()
     df['is_source'] = df.groupby('TRAIN_NO').cumcount() == 0
 
-    # Absolute duur op originele datetime kolommen — onafhankelijk van swap
     df['_duration'] = (
-        pd.to_datetime(df['PLANNED_ARRIVAL']) -
-        pd.to_datetime(df['PLANNED_DEPARTURE'])
-    ).dt.total_seconds().abs()
+        pd.to_datetime(df['PLANNED_EXIT']) -
+        pd.to_datetime(df['PLANNED_ENTRY'])
+    ).dt.total_seconds()
 
     df['TYPE'] = np.where(
         df['is_source'], 'SOURCE',
@@ -250,15 +244,17 @@ def add_segment_type(df: pd.DataFrame) -> pd.DataFrame:
 def add_dynamics(df: pd.DataFrame) -> pd.DataFrame:
     """
     Voegt rijdynamiek toe per segment op basis van voor- en volgend segmenttype.
-    Nodig voor het berekenen van aparte vertragingsverdelingen per dynamiektype.
-
     ACC-0  : trein trekt op, geen remming
     0-BR   : geen optrekken, trein remt
     ACC-BR : trein trekt op én remt
     0-0    : geen optrekken, geen remming
 
-    Moet aangeroepen worden NA add_segment_type.
+    Voor WITHIN-STATION-DWELL segmenten is DYNAMICS altijd '0-0' —
+    stilstaande treinen hebben geen rijdynamiek.
+
+    Moet aangeroepen worden NA add_passing_time (zodat volgorde correct is).
     """
+    df = sort_timetable(df, time_col='ENTRY_SECONDS')
     df = df.copy()
 
     df['PREVIOUS_TYPE'] = df.groupby('TRAIN_NO')['TYPE'].shift(1)
@@ -275,13 +271,15 @@ def add_dynamics(df: pd.DataFrame) -> pd.DataFrame:
     df.loc[ df['ACCELERATION'] &  df['BREAKING'], 'DYNAMICS'] = 'ACC-BR'
     df.loc[~df['ACCELERATION'] & ~df['BREAKING'], 'DYNAMICS'] = '0-0'
 
+    # Dwell-segmenten hebben geen rijdynamiek
+    df.loc[df['TYPE'] == 'WITHIN-STATION-DWELL', 'DYNAMICS'] = '0-0'
+
     return df.drop(columns=['PREVIOUS_TYPE', 'NEXT_TYPE', 'ACCELERATION', 'BREAKING'])
+
 
 def add_train_type(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # Extraheer type: eerste woord vóór : of spatie
     raw = df['RELATION_DIRECTION'].str.extract(r'^([^:\s]+)')[0]
-    # Groepeer S-treinen: S1, S2, S10-1, ... → S
     df['TRAIN_TYPE'] = raw.str.replace(r'^S\d.*', 'S', regex=True)
     return df
 
@@ -291,10 +289,7 @@ def add_train_type(df: pd.DataFrame) -> pd.DataFrame:
 
 @dataclass
 class TrackAssignmentDiagnostics:
-    """
-    Bijhoudt conflictstatistieken per station en perrongroep.
-    Bruikbaar voor capaciteitsanalyse in de thesis.
-    """
+    """Bijhoudt conflictstatistieken per station en perrongroep."""
     conflicts:   dict = field(default_factory=dict)
     assignments: dict = field(default_factory=dict)
     invalid:     dict = field(default_factory=dict)
@@ -336,7 +331,6 @@ def _assign_tracks_by_overlap(
     """
     Wijst individuele platforms toe binnen één eilandperron via greedy
     interval scheduling op basis van [ENTRY_SECONDS, EXIT_SECONDS].
-
     Modifieert df['PERRON'] in-place.
 
     Greedy strategie: kies platform dat het vroegst vrijkomt (minimale
@@ -352,7 +346,6 @@ def _assign_tracks_by_overlap(
     if groep_idx.empty:
         return
 
-    # Valideer intervallen — EXIT moet groter zijn dan ENTRY
     invalid_mask = groep_mask & (df['EXIT_SECONDS'] <= df['ENTRY_SECONDS'])
     n_invalid = invalid_mask.sum()
     if n_invalid > 0:
@@ -366,10 +359,7 @@ def _assign_tracks_by_overlap(
     if groep_idx.empty:
         return
 
-    # Sorteer op ENTRY_SECONDS — interval scheduling start bij binnenkomst
     sorted_idx = groep_idx[df.loc[groep_idx, 'ENTRY_SECONDS'].argsort()]
-
-    # platform → EXIT_SECONDS van laatste trein op dit platform
     platform_vrij_vanaf = {p: -1 for p in platforms}
 
     for idx in sorted_idx:
@@ -377,15 +367,12 @@ def _assign_tracks_by_overlap(
         exit_ = df.at[idx, 'EXIT_SECONDS']
         diagnostics.log_assignment(station, perron_groep)
 
-        # Kies platform dat het vroegst vrijkomt (beste spreiding)
         vroegst_vrij = min(platform_vrij_vanaf, key=platform_vrij_vanaf.get)
 
         if platform_vrij_vanaf[vroegst_vrij] <= entry:
-            # Geen conflict
             df.at[idx, 'PERRON'] = vroegst_vrij
             platform_vrij_vanaf[vroegst_vrij] = exit_
         else:
-            # Capaciteitstekort — kies platform met minimale overlaptijd
             best_platform = min(platform_vrij_vanaf, key=platform_vrij_vanaf.get)
             overlap = platform_vrij_vanaf[best_platform] - entry
             df.at[idx, 'PERRON'] = best_platform
@@ -401,23 +388,15 @@ def assign_platforms(
     df: pd.DataFrame,
 ) -> tuple[pd.DataFrame, TrackAssignmentDiagnostics]:
     """
-    Verfijnt SECTION voor dwell-segmenten door individueel platform toe te voegen.
-    Enkel van toepassing op WITHIN-STATION-DWELL segmenten (SOURCE == TARGET).
-
-    Gebruikt ENTRY_SECONDS en EXIT_SECONDS voor tijdsoverlap scheduling.
-    Moet aangeroepen worden NA add_time_in_seconds.
+    Verfijnt SECTION voor station-segmenten door individueel platform toe te voegen.
 
     Methodologie per stationstype:
-    - Vaste platform-lijn toewijzing: Brussel-Noord, Anderlecht, Jette,
-      Bockstael, Brussel-Schuman, Brussel-West, Simonis, Thurn en Taxis,
+    - Vaste platform-lijn toewijzing: Brussel-Noord, Jette, Bockstael,
+      Brussel-Schuman, Brussel-West, Simonis, Thurn en Taxis,
       Vorst-Oost, Zellik, Sint-Agatha-Berchem
     - Tijdsoverlap via greedy interval scheduling: Brussel-Centraal,
-      Brussel-Congres, Brussel-Kapellekerk
+      Brussel-Congres, Brussel-Kapellekerk, Anderlecht
     - RELATION_DIRECTION als proxy: Schaarbeek, Brussel-Zuid
-
-    Returns:
-        df:          aangepaste DataFrame met verfijnde SECTION
-        diagnostics: conflictstatistieken per station en perrongroep
     """
     df = df.copy()
     diagnostics = TrackAssignmentDiagnostics()
@@ -459,25 +438,21 @@ def assign_platforms(
     }
 
     mask = (df['SOURCE'] == 'BRUSSEL-NOORD') & (df['TARGET'] == 'BRUSSEL-NOORD')
-    prev_is_internal = df.loc[mask, 'PREVIOUS_SECTION'].str.startswith('0-', na=False)
-    next_is_internal = df.loc[mask, 'NEXT_SECTION'].str.startswith('0-', na=False)
+    prev_is_internal = df['PREVIOUS_SECTION'].str.startswith('0-', na=False)
+    next_is_internal = df['NEXT_SECTION'].str.startswith('0-', na=False)
 
-    # Geval 1: externe vorige sectie → aankomende lijn bepaalt platform
     df.loc[mask & ~prev_is_internal, 'PERRON'] = \
         df.loc[mask & ~prev_is_internal, 'PREVIOUS_SECTION'].map(bxl_noord_in)
-
-    # Geval 2: interne vorige + externe volgende → vertrekkende lijn bepaalt platform
     df.loc[mask & prev_is_internal & ~next_is_internal, 'PERRON'] = \
         df.loc[mask & prev_is_internal & ~next_is_internal, 'NEXT_SECTION'].map(bxl_noord_out)
 
-    # Geval 3: beide intern → tijdsoverlap over alle platforms
     both_internal = mask & prev_is_internal & next_is_internal
     df.loc[both_internal, 'PERRON_GROEP'] = 'alle'
     _assign_tracks_by_overlap(
         df, both_internal, 'alle',
         ['platform 1', 'platform 2', 'platform 3', 'platform 4',
-        'platform 5', 'platform 6', 'platform 7', 'platform 8',
-        'platform 9', 'platform 10', 'platform 11', 'platform 12'],
+         'platform 5', 'platform 6', 'platform 7', 'platform 8',
+         'platform 9', 'platform 10', 'platform 11', 'platform 12'],
         'BRUSSEL-NOORD', diagnostics
     )
 
@@ -494,11 +469,10 @@ def assign_platforms(
     # -------------------------------------------------------------------------
     mask_bc = (df['SOURCE'] == 'BRUSSEL-CENTRAAL') & (df['TARGET'] == 'BRUSSEL-CENTRAAL')
     df.loc[mask_bc, 'PERRON_GROEP'] = 'alle'
-
     _assign_tracks_by_overlap(
         df, mask_bc, 'alle',
         ['platform 1', 'platform 2', 'platform 3',
-        'platform 4', 'platform 5', 'platform 6'],
+         'platform 4', 'platform 5', 'platform 6'],
         'BRUSSEL-CENTRAAL', diagnostics
     )
 
@@ -513,7 +487,6 @@ def assign_platforms(
     # -------------------------------------------------------------------------
     mask_bcong = (df['SOURCE'] == 'BRUSSEL-CONGRES') & (df['TARGET'] == 'BRUSSEL-CONGRES')
     df.loc[mask_bcong, 'PERRON_GROEP'] = 'alle'
-
     _assign_tracks_by_overlap(
         df, mask_bcong, 'alle',
         ['platform 1', 'platform 2', 'platform 3', 'platform 4'],
@@ -534,6 +507,7 @@ def assign_platforms(
         ['platform 1', 'platform 2', 'platform 3', 'platform 4'],
         'BRUSSEL-KAPELLEKERK', diagnostics
     )
+
     # -------------------------------------------------------------------------
     # ANDERLECHT
     # 4 sporen op 2 zijsporen van spoorlijn 50C.
@@ -575,10 +549,10 @@ def assign_platforms(
     # Assumptie: lijncode bepaalt rijrichting en platform.
     # -------------------------------------------------------------------------
     mask = (df['SOURCE'] == 'JETTE') & (df['TARGET'] == 'JETTE')
-    prev_is_internal = df.loc[mask, 'PREVIOUS_SECTION'].str.startswith('0-', na=False)
+    prev_is_internal = df['PREVIOUS_SECTION'].str.startswith('0-', na=False)
 
     df.loc[mask, 'PERRON'] = np.where(
-        prev_is_internal,
+        prev_is_internal[mask],
         np.where(df.loc[mask, 'NEXT_SECTION'] == '50', 'platform 3',
         np.where(df.loc[mask, 'NEXT_SECTION'] == '60', 'platform 4',
         'platform 3')),
@@ -586,11 +560,10 @@ def assign_platforms(
         np.where(df.loc[mask, 'PREVIOUS_SECTION'] == '60', 'platform 2',
         'platform 1'))
     )
-    # -------------------------------------------------------------------------
-    # Overige stations — vaste toewijzing op basis van vorig/volgend station
-    # -------------------------------------------------------------------------
-    
 
+    # -------------------------------------------------------------------------
+    # Overige stations
+    # -------------------------------------------------------------------------
     mask = (df['SOURCE'] == 'BOCKSTAEL') & (df['TARGET'] == 'BOCKSTAEL')
     df.loc[mask, 'PERRON'] = np.where(
         df.loc[mask, 'PREVIOUS_STATION'] == 'JETTE', 'platform 1', 'platform 2'
@@ -634,7 +607,6 @@ def assign_platforms(
         df.loc[mask, 'PREVIOUS_STATION'] == 'JETTE', 'platform 2', 'platform 1'
     )
 
-    # Voeg platform toe aan SECTION — SECTION_MACRO behoudt originele sectienaam
     df['SECTION_MACRO'] = df['SECTION']
     df['SECTION'] = np.where(
         df['PERRON'].notna(),
@@ -655,27 +627,13 @@ def assign_platforms(
 
 
 # =============================================================================
-# Opslaan
+# Opslaan / laden
 # =============================================================================
 
 def save_gold(df: pd.DataFrame, source: str = 'passenger', n_trains: int | None = None) -> None:
-    """
-    Slaat de finale timetable op als parquet en per trein als JSON.
-
-    Output structuur:
-        GOLD_DIR/passenger/planned_timetable.parquet
-        GOLD_DIR/passenger/trains/{train_no}.json
-        GOLD_DIR/freight/{n_trains}/freight_timetable.parquet
-        GOLD_DIR/freight/{n_trains}/trains/{train_no}.json
-        GOLD_DIR/combined/{n_trains}/combined_timetable.parquet
-        GOLD_DIR/combined/{n_trains}/trains/{train_no}.json
-
-    Args:
-        source:   'passenger', 'freight' of 'combined'
-        n_trains: aantal freight treinen — verplicht voor source='freight' en 'combined'
-    """
+    """Slaat de finale timetable op als parquet."""
     if source not in ('passenger', 'freight', 'combined'):
-        raise ValueError(f"Onbekende source '{source}'. Kies uit: ['passenger', 'freight', 'combined']")
+        raise ValueError(f"Onbekende source '{source}'.")
     if source in ('freight', 'combined') and n_trains is None:
         raise ValueError(f"n_trains is verplicht voor source='{source}'")
 
@@ -691,32 +649,13 @@ def save_gold(df: pd.DataFrame, source: str = 'passenger', n_trains: int | None 
 
     source_dir.mkdir(parents=True, exist_ok=True)
     df.to_parquet(source_dir / filename, index=False)
-
-    # trains_dir = source_dir / 'trains'
-    # trains_dir.mkdir(parents=True, exist_ok=True)
-    # for train_no in df['TRAIN_NO'].unique():
-    #     df[df['TRAIN_NO'] == train_no].to_json(trains_dir / f"{train_no}.json")
-
     print(f"Opgeslagen ({source}): {df['TRAIN_NO'].nunique()} treinen, {len(df)} segmenten → {source_dir}")
 
 
-# =============================================================================
-# Laden
-# =============================================================================
-
 def load_gold(source: str = 'passenger', n_trains: int | None = None) -> pd.DataFrame:
-    """
-    Laadt een opgeslagen gold timetable uit GOLD_DIR.
-
-    Args:
-        source:   'passenger', 'freight' of 'combined'
-        n_trains: aantal freight treinen — verplicht voor source='freight' en 'combined'
-
-    Returns:
-        DataFrame met geplande timetable
-    """
+    """Laadt een opgeslagen gold timetable."""
     if source not in ('passenger', 'freight', 'combined'):
-        raise ValueError(f"Onbekende source '{source}'. Kies uit: ['passenger', 'freight', 'combined']")
+        raise ValueError(f"Onbekende source '{source}'.")
     if source in ('freight', 'combined') and n_trains is None:
         raise ValueError(f"n_trains is verplicht voor source='{source}'")
 

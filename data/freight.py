@@ -1,27 +1,9 @@
-# Genereert een synthetische vrachtverkeer-timetable voor de Brusselse corridor.
-#
-# Tijdsconventie — consistent met timetable.py:
-#   Between-station: PLANNED_DEPARTURE = vertrek SOURCE, PLANNED_ARRIVAL = aankomst TARGET
-#   Dwell:           PLANNED_ARRIVAL = binnenkomst, PLANNED_DEPARTURE = vertrek
-#                    (PLANNED_DEPARTURE > PLANNED_ARRIVAL — zelfde semantiek als passenger brondata)
-#   add_time_in_seconds() in combine_timetable.py corrigeert dit uniform.
-#
-# SECTION-conventie — identiek aan passenger pipeline:
-#   Between-station: {LINE_NO_DEP}:{SOURCE}-{TARGET}
-#   Dwell:           {SOURCE}
-#   Lijncode wordt afgeleid uit passenger data via build_line_no_lookup().
-#   Zo is assign_platforms() uit timetable.py rechtstreeks toepasbaar op freight.
-#
-# Periodeverdeling (default):
-#   Freight rijdt overwegend buiten de passagierspiekuren omdat passagierstreinen
-#   overdag prioriteit krijgen op gedeeld spoor. De default verdeling weerspiegelt
-#   dit: zwaar naar NIGHT en DAYTIME, licht naar peaks en avond.
-#   Dit is een modelkeuze, geen empirisch gegeven — aanpasbaar via period_probs.
-
 import logging
 
 import numpy as np
 import pandas as pd
+
+from config.settings import PASSING_DURATION_FREIGHT
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +36,6 @@ PERIOD_RANGES: dict[str, tuple[int, int]] = {
     "EVENING":      (19, 24),
 }
 
-# Default periodekansen voor freight:
-#   Freight vermijdt passagierspiekuren → zwaar naar NIGHT en DAYTIME.
-#   Modelkeuze, geen empirisch gegeven.
 DEFAULT_PERIOD_PROBS: dict[str, float] = {
     "NIGHT":        0.40,
     "MORNING PEAK": 0.05,
@@ -70,25 +49,7 @@ BASE_DATE = pd.Timestamp("2025-01-01")
 # =============================================================================
 # Fallback rijtijden en lijncodes voor secties zonder passenger data
 # =============================================================================
-#
-# Deze secties hebben geen passenger treinen in de gold timetable en worden
-# niet gevonden door build_running_time_lookup(). Rijtijden worden geschat
-# via afstand / gemiddelde snelheid × FREIGHT_FACTOR.
-#
-# Kalibratie via SCHAARBEEK ↔ BRUSSEL-NOORD:
-#   Afstand (Infrabel open data): 2.5 km
-#   Passenger mediane rijtijd:    234s (beide richtingen)
-#   Impliciete snelheid:          10.68 m/s ≈ 38.5 km/h
-#
-# Ontbrekende secties (afstanden: Infrabel open data):
-#   SCHAARBEEK ↔ THURN EN TAXIS:  3.4 km → passenger ≈ 318s → freight ≈ 414s
-#   SCHAARBEEK ↔ BRUSSEL-SCHUMAN: 4.6 km → passenger ≈ 431s → freight ≈ 560s
-#
-# Lijncodes:
-#   SCHAARBEEK ↔ THURN EN TAXIS:  lijn 28 (consistent met THURN EN TAXIS ↔ SIMONIS)
-#   SCHAARBEEK ↔ BRUSSEL-SCHUMAN: lijn 26
 
-# Passenger rijtijden in seconden (voor freight: × FREIGHT_FACTOR in lookup)
 _FALLBACK_PASSENGER_RUNNING_TIMES: dict[tuple[str, str], float] = {
     ('SCHAARBEEK',      'THURN EN TAXIS'):  318,
     ('THURN EN TAXIS',  'SCHAARBEEK'):      318,
@@ -111,11 +72,6 @@ def build_line_no_lookup(passenger_df: pd.DataFrame) -> dict[tuple[str, str], st
     """
     Leidt per (SOURCE, TARGET) de meest voorkomende lijncode af uit passenger SECTION.
     Secties zonder passenger data worden aangevuld via _FALLBACK_LINE_NOS.
-
-    Passenger SECTION formaat: {LINE_NO_DEP}:{SOURCE}-{TARGET}
-
-    Returns:
-        dict van (SOURCE, TARGET) → lijncode string
     """
     between = passenger_df[passenger_df['SOURCE'] != passenger_df['TARGET']].copy()
     parsed = between['SECTION'].str.extract(r'^(?P<LINE>[^:]+):')
@@ -133,20 +89,12 @@ def build_running_time_lookup(passenger_df: pd.DataFrame) -> dict[tuple[str, str
     """
     Berekent de mediane geplande rijtijd (seconden) per (SOURCE, TARGET) uit passenger data.
     Freight running time = mediane passenger rijtijd x 1.3.
-    Secties zonder passenger data worden aangevuld via _FALLBACK_PASSENGER_RUNNING_TIMES.
-
-    Richtingsasymmetrie (bv. T1a vs T1b) is impliciet aanwezig: de lookup
-    groepeert per (SOURCE, TARGET) apart, dus verschillende rijtijden per
-    richting worden automatisch overgenomen uit de passenger data.
-
-    Returns:
-        dict van (SOURCE, TARGET) -> freight rijtijd in seconden (× 1.3 toegepast)
     """
     between = passenger_df[passenger_df['SOURCE'] != passenger_df['TARGET']].copy()
-    between['PLANNED_DEPARTURE'] = pd.to_datetime(between['PLANNED_DEPARTURE'])
-    between['PLANNED_ARRIVAL']   = pd.to_datetime(between['PLANNED_ARRIVAL'])
-    between['RUNNING_TIME_SEC']  = (
-        between['PLANNED_ARRIVAL'] - between['PLANNED_DEPARTURE']
+    between['PLANNED_ENTRY'] = pd.to_datetime(between['PLANNED_ENTRY'])
+    between['PLANNED_EXIT']  = pd.to_datetime(between['PLANNED_EXIT'])
+    between['RUNNING_TIME_SEC'] = (
+        between['PLANNED_EXIT'] - between['PLANNED_ENTRY']
     ).dt.total_seconds()
 
     between = between[between['RUNNING_TIME_SEC'] > 0]
@@ -165,17 +113,15 @@ def build_running_time_lookup(passenger_df: pd.DataFrame) -> dict[tuple[str, str
 
 def normalize_to_base_date(passenger_df: pd.DataFrame) -> pd.DataFrame:
     df = passenger_df.copy()
-    df['PLANNED_DEPARTURE'] = pd.to_datetime(df['PLANNED_DEPARTURE'])
-    df['PLANNED_ARRIVAL']   = pd.to_datetime(df['PLANNED_ARRIVAL'])
+    df['PLANNED_ENTRY'] = pd.to_datetime(df['PLANNED_ENTRY'])
+    df['PLANNED_EXIT']  = pd.to_datetime(df['PLANNED_EXIT'])
 
-    # Vroegste tijdstip per trein als referentie
-    first_time = df.groupby('TRAIN_NO')['PLANNED_DEPARTURE'].transform('min')
+    first_time = df.groupby('TRAIN_NO')['PLANNED_ENTRY'].transform('min')
     first_date = first_time.dt.normalize()
-
     offset = BASE_DATE - first_date
 
-    df['PLANNED_DEPARTURE'] = df['PLANNED_DEPARTURE'] + offset
-    df['PLANNED_ARRIVAL']   = df['PLANNED_ARRIVAL']   + offset
+    df['PLANNED_ENTRY'] = df['PLANNED_ENTRY'] + offset
+    df['PLANNED_EXIT']  = df['PLANNED_EXIT']  + offset
 
     return df
 
@@ -214,43 +160,28 @@ def _shift_until_feasible(
     max_iter:     int,
 ) -> tuple[pd.Timestamp, bool]:
     """
-    Verschuift een vertrektijdstip totdat het interval [departure, arrival)
+    Verschuift een vertrektijdstip totdat het interval [entry, exit)
     niet overlapt met bestaande intervallen op dezelfde sectie.
-
-    Gebruikt een pure overlap-check zonder headway-buffer — de secties zijn
-    macro (bv. BRUSSEL-NOORD -> SCHAARBEEK), dus de relevante constraint is
-    exclusieve bezetting: één trein per sectie tegelijk. Fijnkorrelige
-    headway-modellering is de verantwoordelijkheid van het MIP-model.
-
-    Geldt voor zowel between-station secties als dwell-secties (stationsnaam).
-
-    Blijft binnen de opgegeven periode. Bij geen feasible slot na max_iter:
-    geeft de best beschikbare tijd terug met feasible=False zodat de aanroeper
-    het conflict kan loggen. De trein wordt toch ingepland (consistent met
-    _assign_tracks_by_overlap in timetable.py).
-
-    Returns:
-        (vertrektijd, feasible)
     """
     period_end = _get_period_end(period)
     time = desired_time
 
     for _ in range(max_iter):
-        arrival = time + pd.Timedelta(seconds=duration_sec)
+        exit_time = time + pd.Timedelta(seconds=duration_sec)
 
-        if arrival > period_end:
+        if exit_time > period_end:
             return time, False
 
         conflict_end = None
-        for dep, arr in sorted(occupied.get(section, [])):
-            if time < arr and arrival > dep:   # overlap: max(starts) < min(ends)
-                conflict_end = arr
+        for entry, exit_ in sorted(occupied.get(section, [])):
+            if time < exit_ and exit_time > entry:
+                conflict_end = exit_
                 break
 
         if conflict_end is None:
             return time, True
 
-        time = conflict_end   # schuif naar einde conflicterend interval
+        time = conflict_end
 
     return time, False
 
@@ -266,47 +197,15 @@ def generate_freight_timetable(
     period_probs:    dict[str, float] | None = None,
     seed:            int = 42,
     base_train_no:   int = 900000,
-    dwell_time_sec:  int = 60,
     max_iter:        int = 20,
 ) -> pd.DataFrame:
     """
     Genereert een synthetische freight timetable voor de Brusselse corridor.
 
-    Planningsstrategie — conflict-check enkel aan het startstation:
-        1. Zoek een conflict-vrij vertrekslot op de eerste sectie van het traject.
-        2. Rijd daarna door zonder verdere conflictchecks — running times zijn
-           vast (mediane passenger rijtijd × 1.3), dwell times zijn vast.
-        3. De planned timetable heeft dus geen wachttijden onderweg.
-
-    Motivatie: een freight dispatcher plant een trein in aan het begin van het
-    traject en verwacht dat hij ononderbroken doorrijdt. Conflicten onderweg
-    zijn verstoringen die het MIP-model oplost — niet iets wat de geplande
-    timetable moet modelleren. Dit vermijdt onrealistisch lange planned arrivals
-    door cascading delays.
-
-    SECTION formaat is identiek aan passenger pipeline zodat assign_platforms()
-    rechtstreeks toepasbaar is.
-
-    Bij geen feasible vertrekslot binnen de periode wordt de trein toch ingepland
-    met een waarschuwing (consistent met _assign_tracks_by_overlap).
-
-    Args:
-        passenger_df:    gold passenger timetable (zonder ENTRY_SECONDS/EXIT_SECONDS).
-                         Datums worden intern genormaliseerd via normalize_to_base_date().
-        n_trains:        aantal te genereren freight treinen
-        traject_probs:   dict van traject_key -> relatief gewicht (hoeft niet te sommeren tot 1)
-        period_probs:    dict van periode -> relatief gewicht.
-                         Default: DEFAULT_PERIOD_PROBS (zwaar naar NIGHT en DAYTIME)
-        seed:            random seed voor reproduceerbaarheid
-        base_train_no:   laagste TRAIN_NO voor freight (vermijd overlap met passenger)
-        dwell_time_sec:  vaste dwell tijd in seconden per tussenstation (default: 60s,
-                         gebaseerd op passagetijd van ~500m trein aan 38.5 km/h)
-        max_iter:        maximaal aantal verschuivingspogingen voor vertrekslot
-
     Returns:
         DataFrame met freight timetable, compatibel met passenger pipeline.
-        Kolommen: TRAIN_NO, SOURCE, TARGET, SECTION, PLANNED_DEPARTURE,
-                  PLANNED_ARRIVAL, RELATION_DIRECTION, TYPE
+        Kolommen: TRAIN_NO, SOURCE, TARGET, SECTION, PLANNED_ENTRY,
+                  PLANNED_EXIT, RELATION_DIRECTION, TYPE
     """
     if period_probs is None:
         period_probs = DEFAULT_PERIOD_PROBS
@@ -321,27 +220,23 @@ def generate_freight_timetable(
     traject_keys, traject_p = _normalize_probs(traject_probs)
     period_keys,  period_p  = _normalize_probs(period_probs)
 
-    # Bezettingsregister: section -> lijst van (start, end) intervallen
-    # Geinitialiseerd met alle passenger between-station segmenten.
-    # Enkel gebruikt voor conflictcheck op eerste sectie van elk traject.
     occupied: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]] = {}
     passenger_between = passenger_norm[passenger_norm['SOURCE'] != passenger_norm['TARGET']]
     for _, row in passenger_between.iterrows():
         occupied.setdefault(row['SECTION'], []).append(
-            (row['PLANNED_DEPARTURE'], row['PLANNED_ARRIVAL'])
+            (row['PLANNED_ENTRY'], row['PLANNED_EXIT'])
         )
 
     rows = []
     n_infeasible = 0
 
     for i in range(n_trains):
-        train_id     = base_train_no + i
-        traject_key  = rng.choice(traject_keys, p=traject_p)
-        stations     = TRAJECTEN[traject_key]
-        period       = rng.choice(period_keys, p=period_p)
-        segments     = _build_segments(stations)
+        train_id    = base_train_no + i
+        traject_key = rng.choice(traject_keys, p=traject_p)
+        stations    = TRAJECTEN[traject_key]
+        period      = rng.choice(period_keys, p=period_p)
+        segments    = _build_segments(stations)
 
-        # --- Zoek conflict-vrij vertrekslot op eerste sectie ---
         first_source, first_target = segments[0]
         first_line_no = line_no_lookup.get((first_source, first_target))
         if first_line_no is None:
@@ -353,8 +248,8 @@ def generate_freight_timetable(
             logger.warning(f"Trein {train_id}: geen rijtijd voor ({first_source}, {first_target}) — overgeslagen")
             continue
 
-        first_section  = f"{first_line_no}:{first_source}-{first_target}"
-        desired_time   = _sample_time_in_period(rng, period)
+        first_section = f"{first_line_no}:{first_source}-{first_target}"
+        desired_time  = _sample_time_in_period(rng, period)
 
         departure, feasible = _shift_until_feasible(
             first_section, desired_time, first_duration, period, occupied, max_iter
@@ -367,12 +262,9 @@ def generate_freight_timetable(
                 f"{first_section} binnen periode {period} — ingepland met conflict"
             )
 
-        # Registreer eerste sectie in occupied zodat volgende treinen
-        # dit vertrekslot vermijden
         arrival = departure + pd.Timedelta(seconds=first_duration)
         occupied.setdefault(first_section, []).append((departure, arrival))
 
-        # --- Rijd door zonder verdere conflictchecks ---
         current_time = departure
 
         for seg_idx, (source, target) in enumerate(segments):
@@ -394,27 +286,27 @@ def generate_freight_timetable(
                 "SOURCE":             source,
                 "TARGET":             target,
                 "SECTION":            section,
-                "PLANNED_DEPARTURE":  current_time,
-                "PLANNED_ARRIVAL":    arrival,
+                "PLANNED_ENTRY":      current_time,
+                "PLANNED_EXIT":       arrival,
                 "RELATION_DIRECTION": traject_key,
                 "TYPE":               "BETWEEN-STATION",
             })
             current_time = arrival
 
-            # --- Dwell-segment (niet voor eindstation) ---
+            # --- Passing-segment (niet voor eindstation) ---
             if seg_idx < len(segments) - 1:
-                dwell_exit = current_time + pd.Timedelta(seconds=dwell_time_sec)
+                passing_exit = current_time + pd.Timedelta(seconds=PASSING_DURATION_FREIGHT)
                 rows.append({
                     "TRAIN_NO":           train_id,
                     "SOURCE":             target,
                     "TARGET":             target,
-                    "SECTION":            target,        # consistent met passenger conventie
-                    "PLANNED_DEPARTURE":  dwell_exit,    # DEPARTURE > ARRIVAL voor dwell:
-                    "PLANNED_ARRIVAL":    current_time,  # zelfde semantiek als passenger brondata
+                    "SECTION":            target,
+                    "PLANNED_ENTRY":      current_time,   # aankomsttijd op station
+                    "PLANNED_EXIT":       passing_exit,   # vertrektijd uit station
                     "RELATION_DIRECTION": traject_key,
-                    "TYPE":               "WITHIN-STATION-DWELL",
+                    "TYPE":               "WITHIN-STATION-PASSING",
                 })
-                current_time = dwell_exit
+                current_time = passing_exit
 
     if n_infeasible > 0:
         logger.warning(f"Freight timetable: {n_infeasible} trein(en) ingepland met conflict op vertrekslot")
@@ -426,19 +318,11 @@ def generate_freight_timetable(
 
     return pd.DataFrame(rows)
 
+
 def add_freight_dynamics(df: pd.DataFrame) -> pd.DataFrame:
     """
     Voegt DYNAMICS kolom toe aan freight timetable.
-
-    Alle freight segmenten krijgen '0-0' — freight treinen passeren de
-    Brusselse corridor als doorgaand verkeer op kruissnelheid.
-    ACC/BR zijn niet van toepassing binnen het beperkte studiegebied.
-
-    Args:
-        df: freight timetable DataFrame
-
-    Returns:
-        Kopie met DYNAMICS kolom toegevoegd
+    Alle freight segmenten krijgen '0-0'.
     """
     df = df.copy()
     df['DYNAMICS'] = '0-0'

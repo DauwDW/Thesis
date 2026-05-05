@@ -15,7 +15,7 @@ GOLD_DIR     = Path("/Users/ddw/Desktop/Rescheduling/data/gold")
 # GOLD_DIR     = Path("")
 
 SIMULATION_SEED = 42
-HORIZON = 3600
+
 #FREIGHT SAMPLING parameters
 FREIGHT_RUNNING_TIME_SCALE = 1.3
 
@@ -50,3 +50,9 @@ PERIODIC_FREQ        = 900   # Periodic: interval between solver calls (s)
 EVENT_DRIVEN_FREQ    = 900   # Event-driven: min interval between solver calls (s)
 CONTROLLER_FREQ      = 300   # How often controller evaluates triggers (s)
 THRESHOLD_CONFIDENCE = 0.6   # Min P(metric > threshold) to fire solver
+
+PASSING_DURATION_PASSENGER = 30  # seconden
+PASSING_DURATION_FREIGHT   = 45  # seconden
+
+RESCHEDULING_HORIZON = 1800
+CONFLICT_WINDOW = 600

@@ -4,12 +4,9 @@ instance.py
 Builds a reduced MILP instance from the current SystemState.
 """
 
-from config.settings import L, GAMMA, EPSILON, DELTA_MAX, WEIGHT_PASSENGER, WEIGHT_FREIGHT, PSL_PASSENGER, PSL_FREIGHT
+from config.settings import L, GAMMA, EPSILON, DELTA_MAX, WEIGHT_PASSENGER, WEIGHT_FREIGHT, PSL_PASSENGER, PSL_FREIGHT, RESCHEDULING_HORIZON, CONFLICT_WINDOW
 from domain.segment import SegmentType
 from domain.train   import TrainType
-
-HORIZON_SECONDS = 1800  # 30 min
-CONFLICT_WINDOW = 600   # 10 min
 
 
 def build_instance(state, timetable, trains, segments, current_time):
@@ -45,7 +42,7 @@ def build_instance(state, timetable, trains, segments, current_time):
             planned_start = timetable.scheduled_arrival(t.id, remaining[0])
         except (KeyError, ValueError):
             continue
-        if planned_start <= current_time + HORIZON_SECONDS:
+        if planned_start <= current_time + RESCHEDULING_HORIZON:
             relevant_trains.append(t)
 
     # Deduplicate
