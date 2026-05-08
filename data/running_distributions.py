@@ -12,9 +12,10 @@ from pathlib import Path
 
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from config.settings import DISTRIBUTIONS_DIR
 
-DISTRIBUTIONS_PATH = Path(__file__).parent / 'distributions' / 'running_distributions.json'
+logger = logging.getLogger(__name__)
+DISTRIBUTIONS_PATH = DISTRIBUTIONS_DIR / 'running_distributions.json'
 
 _distributions: dict | None = None
 

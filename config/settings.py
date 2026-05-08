@@ -1,58 +1,62 @@
 from pathlib import Path
 
-SIMULATION_SEED = 42
-# Pas aan naar jouw lokale situatie
+# =============================================================================
+# Paden — pas aan naar jouw lokale situatie
+# =============================================================================
 # Dauw:
-RAW_DATA_DIR = Path("/Users/ddw/Desktop/Rescheduling/data/raw")
-BRONZE_DIR   = Path("/Users/ddw/Desktop/Rescheduling/data/bronze")
-SILVER_DIR   = Path("/Users/ddw/Desktop/Rescheduling/data/silver")
-GOLD_DIR     = Path("/Users/ddw/Desktop/Rescheduling/data/gold")
+RESULTS_DIR       = Path("/Users/ddw/Desktop/Rescheduling/results")
+DISTRIBUTIONS_DIR = Path("/Users/ddw/Desktop/Rescheduling/data/distributions")
+RAW_DATA_DIR      = Path("/Users/ddw/Desktop/Rescheduling/data/raw")
+BRONZE_DIR        = Path("/Users/ddw/Desktop/Rescheduling/data/bronze")
+SILVER_DIR        = Path("/Users/ddw/Desktop/Rescheduling/data/silver")
+GOLD_DIR          = Path("/Users/ddw/Desktop/Rescheduling/data/gold")
 
 # Alice:
-# RAW_DATA_DIR = Path("")
-# BRONZE_DIR   = Path("")
-# SILVER_DIR   = Path("")
-# GOLD_DIR     = Path("")
+# RESULTS_DIR       = Path("")
+# DISTRIBUTIONS_DIR = Path("")
+# RAW_DATA_DIR      = Path("")
+# BRONZE_DIR        = Path("")
+# SILVER_DIR        = Path("")
+# GOLD_DIR          = Path("")
 
+# =============================================================================
+# Simulatie
+# =============================================================================
 SIMULATION_SEED = 42
 
-#FREIGHT SAMPLING parameters
+# =============================================================================
+# Freight sampling
+# =============================================================================
 FREIGHT_RUNNING_TIME_SCALE = 1.3
-
-# MIP gewichten per treintype
-WEIGHT_PASSENGER = 2   # gewicht in objectieffunctie voor passagierstreinen
-WEIGHT_FREIGHT   = 1   # gewicht in objectieffunctie voor goederentreinen
-
-# Dynamic priority indicator
-PSL_PASSENGER = 1   # passagierstrein krijgt prioriteitsupgrade
-PSL_FREIGHT   = 0   # goederentrein krijgt geen prioriteitsupgrade
-
-# MIP parameters
-GAMMA      = 300     # vertragingsdrempel γ in seconden (5 min)
-EPSILON    = 1       # kleine constante ε
-DELTA_MAX  = 86400   # maximale vertraging (vooraleer er cancellation plaatsvindt?)
-L          = 86400   # big-M voor MIP constraints (alias voor M)
-#TAU_MAX   = 5400 # Planning horizon (s) 90 min, treinen en segmenten die verder liggen dan 90 min zitten niet in active trains TO DO:NOG TOEVOEGEN IN instance.py
-
-# Solver settings
-SOLVER_TIMEOUT_SECONDS = 60     # Max solve time per Gurobi call, als er een feasible oplossing gevonden werd, wordt die gereturned en status = "time-out"
-SOLVER_MIP_GAP         = 0.01   # Relative MIP gap tolerance (1 %) als de gevonden opl zo dicht komt als 1%, wordt die gereturned en status = "optimal"
-
-# Monte Carlo constants — TO DO: calibrate from baseline simulations!!!!
-THRESHOLD_MULTIPLIER = 1.5   # performance_threshold = THRESHOLD_MULTIPLIER * current delay
-MC_DELAY_PROBABILITY = 0.3   # Probability a train picks up extra delay per MC step
-MC_DELAY_MAX_SECONDS = 300   # Max extra delay per MC step (s) = 5 min
-MC_ITERATIONS        = 5     # Number of MC roll-outs per evaluation
- 
- 
-# Default trigger parameters
-PERIODIC_FREQ        = 900   # Periodic: interval between solver calls (s)
-EVENT_DRIVEN_FREQ    = 900   # Event-driven: min interval between solver calls (s)
-CONTROLLER_FREQ      = 300   # How often controller evaluates triggers (s)
-THRESHOLD_CONFIDENCE = 0.6   # Min P(metric > threshold) to fire solver
 
 PASSING_DURATION_PASSENGER = 30  # seconden
 PASSING_DURATION_FREIGHT   = 45  # seconden
 
+# =============================================================================
+# MIP model
+# =============================================================================
+WEIGHT_PASSENGER = 2
+WEIGHT_FREIGHT   = 1
+
+PSL_PASSENGER = 1
+PSL_FREIGHT   = 0
+
+GAMMA     = 300    # vertragingsdrempel γ (s)
+EPSILON   = 1      # kleine constante ε
+DELTA_MAX = 86400  # maximale vertraging (s)
+L         = 86400  # big-M
+
+# TAU_MAX = 5400   # TO DO: planning horizon — nog toevoegen in instance.py
+
+SOLVER_TIMEOUT_SECONDS = 60
+SOLVER_MIP_GAP         = 0.01
+
 RESCHEDULING_HORIZON = 1800
-CONFLICT_WINDOW = 600
+CONFLICT_WINDOW      = 600
+
+# =============================================================================
+# Monte Carlo trigger
+# =============================================================================
+THRESHOLD_MULTIPLIER = 1.5
+MC_ITERATIONS        = 5
+THRESHOLD_CONFIDENCE = 0.6

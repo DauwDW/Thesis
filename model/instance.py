@@ -4,12 +4,12 @@ instance.py
 Builds a reduced MILP instance from the current SystemState.
 """
 
-from config.settings import L, GAMMA, EPSILON, DELTA_MAX, WEIGHT_PASSENGER, WEIGHT_FREIGHT, PSL_PASSENGER, PSL_FREIGHT, RESCHEDULING_HORIZON, CONFLICT_WINDOW
+from config.settings import L, EPSILON, DELTA_MAX, PSL_PASSENGER, PSL_FREIGHT, RESCHEDULING_HORIZON, CONFLICT_WINDOW
 from domain.segment import SegmentType
 from domain.train   import TrainType
 
 
-def build_instance(state, timetable, trains, segments, current_time):
+def build_instance(state, timetable, trains, segments, current_time, weight_passenger, weight_freight, gamma):
 
     # =========================================================================
     # STEP 1 — Select relevant trains (delayed + affected + within horizon)
@@ -184,10 +184,8 @@ def build_instance(state, timetable, trains, segments, current_time):
     # STEP 8 — Weights
     # =========================================================================
 
-    w = {
-        t.id: WEIGHT_PASSENGER if t.train_type == TrainType.PASSENGER else WEIGHT_FREIGHT
-        for t in relevant_trains
-    }
+    w   = {t.id: weight_passenger if t.train_type == TrainType.PASSENGER else weight_freight
+       for t in relevant_trains}
 
     psl = {
         t.id: PSL_PASSENGER if t.train_type == TrainType.PASSENGER else PSL_FREIGHT
@@ -211,7 +209,7 @@ def build_instance(state, timetable, trains, segments, current_time):
         w=w,
         psl=psl,
         L=L,
-        gamma=GAMMA,
+        gamma= gamma,
         epsilon=EPSILON,
         delta_max=DELTA_MAX,
         in_execution=in_execution,

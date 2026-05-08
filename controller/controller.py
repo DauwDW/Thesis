@@ -112,13 +112,15 @@ class Controller:
     timetable : Timetable          — original scheduled times
     """
 
-    def __init__(self, trigger, trains, segments, timetable, priority_strategy):
+    def __init__(self, trigger, trains, segments, timetable, objective_strategy, weight_passenger, weight_freight, gamma):
         self.trigger   = trigger
         self.trains    = trains
         self.segments  = segments
         self.timetable = timetable
-        self.priority_strategy = priority_strategy  # "static" or "dynamic"
-
+        self.objective_strategy = objective_strategy  # "static" or "dynamic" or "timetablemin"
+        self.weight_passenger = weight_passenger
+        self.weight_freight   = weight_freight
+        self.gamma           = gamma
 
         self._n_rescheduled   = 0
         self._n_fcfs_fallback = 0
@@ -138,7 +140,7 @@ class Controller:
         current_time : float       — current simulation time in seconds
 
         Returns
-        -------
+        ------- 
         ControllerResult with action, solution, fcfs_order, and runtime
         """
         step_start = time.time()
@@ -156,14 +158,17 @@ class Controller:
         self._log(current_time, "TRIGGERED", "building instance...")
 
         instance = build_instance(
-            state        = state,
-            timetable    = self.timetable,
-            trains       = self.trains,
-            segments     = self.segments,
-            current_time = current_time,
+            state            = state,
+        timetable        = self.timetable,
+        trains           = self.trains,
+        segments         = self.segments,
+        current_time     = current_time,
+        weight_passenger = self.weight_passenger,
+        weight_freight   = self.weight_freight,
+        gamma            = self.gamma,
         )
         # Step 3 — Call the solver
-        solution = solve(instance, priority_strategy=self.priority_strategy)
+        solution = solve(instance, priority_strategy=self.objective_strategy)
 
         # Step 4a — Solver succeeded
         if solution.is_feasible():
