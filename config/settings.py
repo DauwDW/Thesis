@@ -41,12 +41,10 @@ WEIGHT_FREIGHT   = 1
 PSL_PASSENGER = 1
 PSL_FREIGHT   = 0
 
-GAMMA     = 300    # vertragingsdrempel γ (s)
+GAMMA     = 180    # vertragingsdrempel γ (s)
 EPSILON   = 1      # kleine constante ε
 DELTA_MAX = 86400  # maximale vertraging (s)
 L         = 86400  # big-M
-
-# TAU_MAX = 5400   # TO DO: planning horizon — nog toevoegen in instance.py
 
 SOLVER_TIMEOUT_SECONDS = 60
 SOLVER_MIP_GAP         = 0.01
@@ -57,6 +55,6 @@ CONFLICT_WINDOW      = 600
 # =============================================================================
 # Monte Carlo trigger
 # =============================================================================
-THRESHOLD_MULTIPLIER = 1.5
+MC_DELAY_PER_TRAIN = 10
 MC_ITERATIONS        = 5
 THRESHOLD_CONFIDENCE = 0.6

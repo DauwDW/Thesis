@@ -111,8 +111,8 @@ def results_to_dataframe(state, trains, timetable):
     return pd.DataFrame(records)
 
 
-def _build_run_name(params):
-    """Unieke bestandsnaam op basis van alle run-parameters."""
+def _build_config_name(params):
+    """Mapnaam op basis van alle parameters behalve seed."""
     return (
         f"n{params['n_freight']}"
         f"_{params['trigger_strategy']}"
@@ -124,28 +124,40 @@ def _build_run_name(params):
         f"_cf{int(params['controller_freq'])}"
         f"_pf{int(params['periodic_freq'])}"
         f"_tc{params['threshold_confidence']}"
-        f"_seed{params['seed']}"
     )
+
+
+def _build_run_name(params):
+    """Bestandsnaam op basis van alle parameters inclusief seed."""
+    return _build_config_name(params) + f"_seed{params['seed']}"
 
 
 def _save_results(df, params, controller_summary, output_dir):
     """
-    Slaat het DataFrame (parquet) en de metadata (JSON) op.
-    Runs met dezelfde configuratie én seed zijn per definitie identiek —
-    de run-index vangt het geval op dat iemand toch twee keer exact hetzelfde draait.
+    Slaat het DataFrame (parquet) en de metadata (JSON) op in een submap
+    per configuratie. Binnen de submap is de seed de unieke identifier,
+    zodat 100 seeds per configuratie netjes naast elkaar staan.
+
+    Structuur
+    ---------
+    <output_dir>/
+      <config_name>/
+        <config_name>_seed<seed>.parquet
+        <config_name>_seed<seed>.json
     """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    config_name = _build_config_name(params)
+    run_name    = _build_run_name(params)
 
-    base_name = _build_run_name(params)
-    run_index = len(list(output_dir.glob(f"{base_name}_run*.parquet"))) + 1
-    run_name  = f"{base_name}_run{run_index}"
+    config_dir  = Path(output_dir) / config_name
+    config_dir.mkdir(parents=True, exist_ok=True)
 
-    parquet_path = output_dir / f"{run_name}.parquet"
+    parquet_path = config_dir / f"{run_name}.parquet"
+    json_path    = config_dir / f"{run_name}.json"
+
     df.to_parquet(parquet_path, index=False)
 
-    meta = {**params, "run_index": run_index, "controller_summary": controller_summary}
-    with open(output_dir / f"{run_name}.json", "w") as f:
+    meta = {**params, "controller_summary": controller_summary}
+    with open(json_path, "w") as f:
         json.dump(meta, f, indent=2)
 
     print(f"Resultaten opgeslagen:\n  {parquet_path}")
@@ -158,7 +170,8 @@ def _save_results(df, params, controller_summary, output_dir):
 
 def load_all_runs(results_dir: Path | str = settings.RESULTS_DIR) -> pd.DataFrame:
     """
-    Laadt alle run-metadata uit de JSON-bestanden in results_dir.
+    Laadt alle run-metadata uit de JSON-bestanden in results_dir,
+    inclusief alle configuratie-submappen.
 
     Elke rij is één run, met alle parameters én controller_summary als kolommen.
     De kolom 'parquet_path' geeft het pad naar de bijbehorende resultaten.
@@ -178,7 +191,8 @@ def load_all_runs(results_dir: Path | str = settings.RESULTS_DIR) -> pd.DataFram
         df = pd.read_parquet(runs.iloc[0]["parquet_path"])
     """
     records = []
-    for json_path in sorted(Path(results_dir).glob("*.json")):
+    # Zoek recursief in alle submappen
+    for json_path in sorted(Path(results_dir).rglob("*.json")):
         with open(json_path) as f:
             meta = json.load(f)
         for key, value in meta.pop("controller_summary", {}).items():

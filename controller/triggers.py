@@ -15,6 +15,20 @@ een segment, gaat eerst. Delay propagation via seg_free_at (wanneer het
 segment vrij komt). Rijtijden worden gesampeld via sample_running_time()
 uit reality/sampling.py.
 
+Performance threshold
+---------------------
+De drempel wordt bij elke evaluatie dynamisch bepaald als:
+
+    performance_threshold = current_metric + n_active * MC_DELAY_PER_TRAIN
+
+waarbij current_metric de huidige totale systeemvertraging is en n_active
+het aantal actieve treinen op het moment van evaluatie. De threshold schaalt
+mee met de netwerkbelasting: bij meer actieve treinen is een grotere absolute
+toename nodig om de solver te activeren.
+
+De threshold wordt gereset na elke reschedule zodat hij herberekend wordt
+op basis van de nieuwe systeemtoestand.
+
 Verantwoordelijkheid caller (controller.py)
 -------------------------------------------
 Na een effectieve reschedule moet notify_rescheduled() aangeroepen worden.
@@ -32,7 +46,7 @@ from domain import SegmentType
 from simulation.simulator import sample_duration
 
 from config.settings import (
-    THRESHOLD_MULTIPLIER,
+    MC_DELAY_PER_TRAIN,
     MC_ITERATIONS,
     THRESHOLD_CONFIDENCE,
     SIMULATION_SEED,
@@ -115,6 +129,7 @@ class EventDrivenTrigger(BaseTrigger):
     controller_freq      : float       — min seconden tussen twee evaluaties (<= event_driven_freq)
     threshold_confidence : float       — fractie rollouts boven drempel om solver te vuren
     mc_iterations        : int         — aantal rollouts per evaluatie
+    mc_delay_per_train   : float       — extra vertraging per actieve trein voor drempelberekening (s)
     performance_threshold: float|None  — drempelwaarde; None = lazy init bij eerste evaluatie,
                                          wordt gereset naar None na elke reschedule
     rng                  : np.random.Generator | None
@@ -136,6 +151,7 @@ class EventDrivenTrigger(BaseTrigger):
         controller_freq:       float,
         threshold_confidence:  float = THRESHOLD_CONFIDENCE,
         mc_iterations:         int   = MC_ITERATIONS,
+        mc_delay_per_train:    float = MC_DELAY_PER_TRAIN,
         performance_threshold: float | None = None,
         rng: np.random.Generator | None = None,
     ):
@@ -149,12 +165,13 @@ class EventDrivenTrigger(BaseTrigger):
         self.controller_freq       = controller_freq
         self.threshold_confidence  = threshold_confidence
         self.mc_iterations         = mc_iterations
+        self.mc_delay_per_train    = mc_delay_per_train
         self.performance_threshold = performance_threshold
         self._rng = rng if rng is not None else np.random.default_rng(SIMULATION_SEED)
 
     def notify_rescheduled(self, current_time: float):
         super().notify_rescheduled(current_time)
-        # reset drempel na reschedule zodat hij herberekend wordt op
+        # Reset drempel na reschedule zodat hij herberekend wordt op
         # de nieuwe toestand — verouderde drempel zou triggergevoeligheid
         # structureel kunnen vertekenen na een succesvolle of mislukte reschedule.
         self.performance_threshold = None
@@ -175,14 +192,20 @@ class EventDrivenTrigger(BaseTrigger):
 
     def _estimate_confidence(self, state, current_time: float) -> float:
         current_metric = self._total_delay(state)
+        n_active       = len(state.active_train_ids())
 
         if self.performance_threshold is None:
-            min_threshold = 180.0
-            self.performance_threshold = max(
-                current_metric * THRESHOLD_MULTIPLIER,
-                min_threshold,
+            # Drempel = huidige systeemvertraging + n_active * mc_delay_per_train
+            # Schaalt mee met de netwerkbelasting op het moment van evaluatie.
+            self.performance_threshold = (
+                current_metric + n_active * self.mc_delay_per_train
             )
-            logger.debug(f"MC threshold initialiseerd op: {self.performance_threshold:.1f}s")
+            logger.debug(
+                f"MC threshold initialiseerd op: {self.performance_threshold:.1f}s "
+                f"(current={current_metric:.1f}s, "
+                f"n_active={n_active}, "
+                f"per_train={self.mc_delay_per_train}s)"
+            )
 
         worse = sum(
             1 for i in range(self.mc_iterations)
@@ -228,9 +251,9 @@ class EventDrivenTrigger(BaseTrigger):
         # Startpunt per trein: wanneer is hij vrij voor zijn eerste resterende segment?
         start: dict[int, float] = {}
 
-        # FIX 2 (eerste helft): bepaal per trein het startpunt én registreer
-        # seg_free_at voor het huidig actieve segment. Het actieve segment wordt
-        # in de hoofdlus overgeslagen om dubbele sampling te vermijden.
+        # Bepaal per trein het startpunt én registreer seg_free_at voor het
+        # huidig actieve segment. Het actieve segment wordt in de hoofdlus
+        # overgeslagen om dubbele sampling te vermijden.
         active_seg: dict[int, str | None] = {}
 
         for train_id in state.active_train_ids():
@@ -274,11 +297,10 @@ class EventDrivenTrigger(BaseTrigger):
 
             t = start[train_id]
 
-            # FIX 2 (tweede helft): sla het huidig actieve segment over in de
-            # hoofdlus — het is al gesimuleerd in de startfase hierboven.
-            # Zonder deze skip wordt het segment dubbel gesimuleerd met een
-            # nieuwe sample_duration, wat inconsistente schattingen geeft.
-            current_seg   = active_seg.get(train_id)
+            # Sla het huidig actieve segment over in de hoofdlus — het is al
+            # gesimuleerd in de startfase hierboven. Zonder deze skip wordt het
+            # segment dubbel gesimuleerd met een nieuwe sample_duration.
+            current_seg = active_seg.get(train_id)
             path_to_simulate = (
                 remaining_path[1:]
                 if current_seg is not None
@@ -292,7 +314,6 @@ class EventDrivenTrigger(BaseTrigger):
                 t = max(t, seg_free_at.get(seg_id, 0.0))
 
                 segment  = self._segments.get(seg_id)
-                # FIX 4: dubbele assignment verwijderd (was copy-paste artefact)
                 duration = sample_duration(
                     train      = train,
                     segment    = segment,
@@ -351,7 +372,8 @@ class EventDrivenTrigger(BaseTrigger):
             f"EventDrivenTrigger(event_driven_freq={self.event_driven_freq}s, "
             f"controller_freq={self.controller_freq}s, "
             f"threshold_confidence={self.threshold_confidence}, "
-            f"mc_iterations={self.mc_iterations})"
+            f"mc_iterations={self.mc_iterations}, "
+            f"mc_delay_per_train={self.mc_delay_per_train}s)"
         )
 
 
@@ -375,6 +397,7 @@ class HybridTrigger(BaseTrigger):
         periodic_freq:         float,
         threshold_confidence:  float = THRESHOLD_CONFIDENCE,
         mc_iterations:         int   = MC_ITERATIONS,
+        mc_delay_per_train:    float = MC_DELAY_PER_TRAIN,
         performance_threshold: float | None = None,
         rng: np.random.Generator | None = None,
     ):
@@ -391,6 +414,7 @@ class HybridTrigger(BaseTrigger):
             controller_freq       = controller_freq,
             threshold_confidence  = threshold_confidence,
             mc_iterations         = mc_iterations,
+            mc_delay_per_train    = mc_delay_per_train,
             performance_threshold = performance_threshold,
             rng                   = rng,
         )
@@ -415,7 +439,8 @@ class HybridTrigger(BaseTrigger):
             f"controller_freq={ed.controller_freq}s, "
             f"periodic_freq={self.periodic_freq}s, "
             f"threshold_confidence={ed.threshold_confidence}, "
-            f"mc_iterations={ed.mc_iterations})"
+            f"mc_iterations={ed.mc_iterations}, "
+            f"mc_delay_per_train={ed.mc_delay_per_train}s)"
         )
 
 

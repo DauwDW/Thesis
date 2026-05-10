@@ -87,7 +87,7 @@ class ControllerResult:
     """
 
     def __init__(self, action, solution=None, fcfs_order=None, runtime=0.0):
-        self.action     = action
+        self.action     = action 
         self.solution   = solution
         self.fcfs_order = fcfs_order
         self.runtime    = runtime
@@ -121,6 +121,8 @@ class Controller:
         self.weight_passenger = weight_passenger
         self.weight_freight   = weight_freight
         self.gamma           = gamma
+        self._solver_runtimes = []
+
 
         self._n_rescheduled   = 0
         self._n_fcfs_fallback = 0
@@ -174,6 +176,7 @@ class Controller:
         if solution.is_feasible():
             self.trigger.notify_rescheduled(current_time)
             self._n_rescheduled += 1
+            self._solver_runtimes.append(solution.runtime)
             self._log(
                 current_time,
                 "RESCHEDULED",
@@ -218,13 +221,14 @@ class Controller:
             "n_fcfs_fallback" : self._n_fcfs_fallback,
             "n_skipped"       : self._n_skipped,
             "total_steps"     : self._n_rescheduled + self._n_fcfs_fallback + self._n_skipped,
+            "total_solver_runtime_s": sum(self._solver_runtimes),
         }
 
     def __repr__(self):
         return (
             f"Controller("
             f"trigger={self.trigger}, "
-            f"priority_strategy={self.priority_strategy}, "
+            f"priority_strategy={self.objective_strategy_strategy}, "
             f"rescheduled={self._n_rescheduled}, "
             f"fcfs={self._n_fcfs_fallback}, "
             f"skipped={self._n_skipped})"
