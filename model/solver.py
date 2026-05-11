@@ -3,13 +3,12 @@ from model.mip_dynamic import build_and_solve_model as solve_dynamic
 from model.solution    import parse_solution, Solution
 
 _EMPTY_SOLUTION = Solution(
-    status   = "unknown",
-    objective= None,
-    runtime  = 0.0,
-    arrival  = {},
-    departure= {},
-    delay    = {},
-    ordering = {},
+    status    = "unknown",
+    objective = None,
+    runtime   = 0.0,
+    arrival   = {},
+    departure = {},
+    delay     = {},
 )
 
 _VALID_STRATEGIES = ("static", "dynamic")
@@ -25,13 +24,12 @@ def solve(instance, priority_strategy="static", time_limit=60, verbose=False):
 
     if not instance["T"]:
         return Solution(
-            status   = "optimal",
-            objective= 0.0,
-            runtime  = 0.0,
-            arrival  = {},
-            departure= {},
-            delay    = {},
-            ordering = {},
+            status    = "optimal",
+            objective = 0.0,
+            runtime   = 0.0,
+            arrival   = {},
+            departure = {},
+            delay     = {},
         )
 
     if priority_strategy == "static":
@@ -46,30 +44,27 @@ def solve(instance, priority_strategy="static", time_limit=60, verbose=False):
 
 def _solve_static(instance, time_limit, verbose):
     try:
-        model, a, d, delta, y, C, _ = solve_static(
-            T            = instance["T"],
-            Tp           = instance["Tp"],
-            Tf           = instance["Tf"],
-            S            = instance["S"],
-            Ss           = instance["Ss"],
-            Sl           = instance["Sl"],
-            path         = instance["path"],
-            sched_entry  = instance["sched_entry"],
-            sched_dep    = instance["sched_dep"],
-            RT           = instance["RT"],
-            DW           = instance["DW"],
-            H            = instance["H"],
-            h_stop       = instance["h_stop"],
-            w            = instance["w"],
-            L            = instance["L"],
-            C            = instance.get("C", None),
-            in_execution = instance.get("in_execution", {}),
-            fix_arrival  = instance.get("fix_arrival", {}),
-            time_limit   = time_limit,
-            current_time = instance.get("current_time"),
-            verbose      = verbose,
+        model, entry, dep, delay, y, final_segment = solve_static(
+            T              = instance["T"],
+            S              = instance["S"],
+            Ss             = instance["Ss"],
+            Sl             = instance["Sl"],
+            path           = instance["path"],
+            sched_entry    = instance["sched_entry"],
+            sched_exit     = instance["sched_exit"],
+            runtime        = instance["runtime"],
+            dwell          = instance["dwell"],
+            conflicts      = instance["conflicts"],
+            occupied       = instance["occupied"],
+            fixed_entry    = instance["fixed_entry"],
+            actual_entries = instance["actual_entries"],
+            weights        = instance["weights"],
+            L              = instance["L"],
+            current_time   = instance["current_time"],
+            time_limit     = time_limit,
+            verbose        = verbose,
         )
-        return parse_solution(model, a, d, delta, y, C)
+        return parse_solution(model, entry, dep, delay, y, instance["conflicts"])
 
     except Exception as e:
         print(f"[solver] Gurobi error (static): {e}")
@@ -78,6 +73,13 @@ def _solve_static(instance, time_limit, verbose):
 
 def _solve_dynamic(instance, time_limit, verbose):
     try:
+        # Reconstrueer H uit conflicts — altijd 0 (geen headway)
+        H = {}
+        for s, pairs in instance["conflicts"].items():
+            for (i, j) in pairs:
+                H[(i, j, s)] = 0
+                H[(j, i, s)] = 0
+
         model, a, d, delta, y, pdl, q, C, _ = solve_dynamic(
             T            = instance["T"],
             Tp           = instance["Tp"],
@@ -87,21 +89,21 @@ def _solve_dynamic(instance, time_limit, verbose):
             Sl           = instance["Sl"],
             path         = instance["path"],
             sched_entry  = instance["sched_entry"],
-            sched_dep    = instance["sched_dep"],
-            RT           = instance["RT"],
-            DW           = instance["DW"],
-            H            = instance["H"],
-            h_stop       = instance["h_stop"],
+            sched_dep    = instance["sched_exit"],
+            RT           = instance["runtime"],
+            DW           = instance["dwell"],
+            H            = H,
+            h_stop       = instance.get("h_stop", {}),
             psl          = instance.get("psl", {}),
             gamma        = instance.get("gamma", 0),
             epsilon      = instance.get("epsilon", 0),
             delta_max    = instance.get("delta_max", 0),
             L            = instance["L"],
-            C            = instance.get("C", None),
-            in_execution = instance.get("in_execution", {}),
-            fix_arrival  = instance.get("fix_arrival", {}),
+            C            = instance["conflicts"],
+            in_execution = instance["occupied"],
+            fix_arrival  = instance["fixed_entry"],
             time_limit   = time_limit,
-            current_time = instance.get("current_time"),
+            current_time = instance["current_time"],
             verbose      = verbose,
         )
         return parse_solution(model, a, d, delta, y, C, pdl=pdl, q=q)

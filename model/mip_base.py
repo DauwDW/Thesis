@@ -4,185 +4,206 @@ from gurobipy import GRB
 
 
 def build_and_solve_model(
+
     T,
-    Tp,
-    Tf,
     S,
     Ss,
     Sl,
+
     path,
+
     sched_entry,
-    sched_dep,
-    RT,
-    DW,
-    H,
-    h_stop,
-    w,
+    sched_exit,
+
+    runtime,
+    dwell,
+
+    conflicts,
+
+    occupied,
+    fixed_entry,
+    actual_entries,
+
+    weights,
+
     L,
-    C=None,
-    in_execution=None,
-    fix_arrival=None,
-    M=None,
+
+    current_time,
+
     time_limit=None,
     verbose=True,
-    current_time=None
 ):
+    """
+    Static priority MIP model for train rescheduling.
 
-    if in_execution is None:
-        in_execution = {}
-    if fix_arrival is None:
-        fix_arrival = {}
-    if M is None:
-        M = L
+    Lower bound semantics voor entry-variabelen:
 
-    model = gp.Model("rail_rescheduling_milp")
+      1. (t,s) in fixed_entry:
+         lb = ub = current_time
+         Actief segment — trein zit hier NU, entry gefixed.
+
+      2. (t,s) in actual_entries:
+         lb = ub = actual_entry[(t,s)]
+         Segment al betreden, entry ligt in het verleden en kan
+         niet meer aangepast worden — gefixed op werkelijke waarde.
+
+      3. Overige segmenten:
+         lb = sched_entry[(t,s)]
+         Toekomstige segmenten. De continuity constraint
+         entry[next] >= dep[current] garandeert automatisch dat
+         deze segmenten >= current_time zijn zonder artificiële
+         delay te injecteren.
+    """
+
+    model = gp.Model("rail_rescheduling")
 
     if not verbose:
         model.Params.OutputFlag = 0
     if time_limit is not None:
         model.Params.TimeLimit = time_limit
 
-    # ==========================================================
+    # =========================================================================
     # Sets
-    # ==========================================================
+    # =========================================================================
+
     TS = [(t, s) for t in T for s in path[t]]
 
-    if C is None:
-        C = {}
-        for s in S:
-            trains_on_s = [t for t in T if s in path[t]]
-            C[s] = [(trains_on_s[a], trains_on_s[b])
-                    for a in range(len(trains_on_s))
-                    for b in range(a + 1, len(trains_on_s))]
+    final_segment = {t: path[t][-1] for t in T}
 
-    final_seg = {t: path[t][-1] for t in T}
-
-    consecutive_pairs = [
+    consecutive = [
         (t, path[t][k], path[t][k + 1])
         for t in T
         for k in range(len(path[t]) - 1)
     ]
 
-    # ==========================================================
-    # VALIDATE fix_arrival 
-    # ==========================================================
-    if current_time is not None:
-        for (t, s), time in fix_arrival.items():
-            if time < current_time:
-                raise ValueError(
-                    f"FIX_ARRIVAL IN PAST: train {t}, seg {s}, "
-                    f"{time} < {current_time}"
-                )
-
-    # ==========================================================
+    # =========================================================================
     # Variables
-    # ==========================================================
-    a = {}
+    # =========================================================================
+
+    entry = {}
+    dep   = {}
+    delay = {}
 
     for t, s in TS:
-        if (t, s) in fix_arrival:
-            fixed_time = fix_arrival[(t, s)]
-            a[t, s] = model.addVar(
-                lb=fixed_time,
-                ub=fixed_time,
+
+        # --- entry ---
+
+        if (t, s) in fixed_entry:
+            # 1. Actief segment — gefixed op current_time
+            fixed = fixed_entry[(t, s)]
+            entry[t, s] = model.addVar(
+                lb=fixed, ub=fixed,
                 vtype=GRB.CONTINUOUS,
-                name=f"a[{t},{s}]"
+                name=f"entry[{t},{s}]",
             )
+
+        elif (t, s) in actual_entries:
+            # 2. Al betreden — gefixed op werkelijke entrytijd
+            ae = actual_entries[(t, s)]
+            entry[t, s] = model.addVar(
+                lb=ae, ub=ae,
+                vtype=GRB.CONTINUOUS,
+                name=f"entry[{t},{s}]",
+            )
+
         else:
-            lb = current_time if current_time is not None else 0.0
-            a[t, s] = model.addVar(
-                lb=lb,
+            # 3. Toekomstig segment — lb = sched_entry
+            entry[t, s] = model.addVar(
+                lb=sched_entry[(t, s)],
                 vtype=GRB.CONTINUOUS,
-                name=f"a[{t},{s}]"
+                name=f"entry[{t},{s}]",
             )
 
-    d = model.addVars(TS, vtype=GRB.CONTINUOUS, lb=0, name="d")
-    delta = model.addVars(TS, vtype=GRB.CONTINUOUS, lb=0, name="delta")
+        # --- departure ---
 
-    y_index = [(i, j, s) for s in S for (i, j) in C[s]]
-    y = model.addVars(y_index, vtype=GRB.BINARY, name="y")
-
-    # ==========================================================
-    # Objective
-    # ==========================================================
-    model.setObjective(
-        gp.quicksum(w[t] * delta[t, final_seg[t]] for t in T),
-        GRB.MINIMIZE
-    )
-
-    # ==========================================================
-    # C1 — Time consistency
-    # ==========================================================
-    for t in T:
-        for s in path[t]:
-            if s in Sl:
-                duration = in_execution.get((t, s), RT[t, s])
-                model.addConstr(
-                    d[t, s] >= a[t, s] + duration,
-                    name=f"C1a_{t}_{s}"
-                )
-
-    for t in T:
-        for s in path[t]:
-            if s in Ss:
-                if (t, s) in in_execution:
-                    model.addConstr(
-                        d[t, s] >= a[t, s] + in_execution[(t, s)],
-                        name=f"C1b_exec_{t}_{s}"
-                    )
-                else:
-                    model.addConstr(
-                        d[t, s] >= a[t, s] + DW[t, s] * h_stop[t, s],
-                        name=f"C1b_{t}_{s}"
-                    )
-
-    for t, s, s_next in consecutive_pairs:
-        model.addConstr(
-            a[t, s_next] >= d[t, s],    # Hier wordt >= gebruikt voor wiskunde flexibiliteit, in simulatie wordt = gebruikt
-            name=f"C1c_{t}_{s}_{s_next}"
+        dep[t, s] = model.addVar(
+            lb=0,
+            vtype=GRB.CONTINUOUS,
+            name=f"dep[{t},{s}]",
         )
 
-    # ==========================================================
-    # C2 — No early departure
-    # ==========================================================
+        # --- delay ---
+
+        delay[t, s] = model.addVar(
+            lb=0,
+            vtype=GRB.CONTINUOUS,
+            name=f"delay[{t},{s}]",
+        )
+
+    y_index = [(i, j, s) for s in S for (i, j) in conflicts[s]]
+    y = model.addVars(y_index, vtype=GRB.BINARY, name="y")
+
+    # =========================================================================
+    # Objective
+    # =========================================================================
+
+    model.setObjective(
+        gp.quicksum(
+            weights[t] * delay[t, final_segment[t]]
+            for t in T
+        ),
+        GRB.MINIMIZE,
+    )
+
+    # =========================================================================
+    # C1 — Segment occupation
+    # =========================================================================
+
     for t in T:
         for s in path[t]:
-            if s in Ss:
-                model.addConstr(
-                    d[t, s] >= sched_dep[t, s] - M * (1 - h_stop[t, s]),
-                    name=f"C2_{t}_{s}"
-                )
 
-    # ==========================================================
-    # C3 — Delay
-    # ==========================================================
+            if (t, s) in occupied:
+                duration = occupied[(t, s)]
+            elif s in Sl:
+                duration = runtime[(t, s)]
+            else:
+                duration = dwell[(t, s)]
+
+            model.addConstr(
+                dep[t, s] >= entry[t, s] + duration,
+                name=f"C1_occupation[{t},{s}]",
+            )
+
+    # =========================================================================
+    # C2 — Path continuity
+    # =========================================================================
+
+    for t, s, s_next in consecutive:
+        model.addConstr(
+            entry[t, s_next] >= dep[t, s],
+            name=f"C2_continuity[{t},{s},{s_next}]",
+        )
+
+    # =========================================================================
+    # C3 — Delay definition
+    # =========================================================================
+
     for t in T:
         for s in path[t]:
             model.addConstr(
-                delta[t, s] >= a[t, s] - sched_entry[t, s],
-                name=f"C3_{t}_{s}"
+                delay[t, s] >= entry[t, s] - sched_entry[(t, s)],
+                name=f"C3_delay[{t},{s}]",
             )
 
-    # ==========================================================
+    # =========================================================================
     # C4 — Conflicts
-    # ==========================================================
-    # Headways zijn hier weggelaten
+    # =========================================================================
+
     for s in S:
-        for i, j in C[s]:
-
+        for i, j in conflicts[s]:
             model.addConstr(
-                a[j, s] >= d[i, s] - M * (1 - y[i, j, s]),
-                name=f"C4a_{i}_{j}_{s}"
+                entry[j, s] >= dep[i, s] - L * (1 - y[i, j, s]),
+                name=f"C4a_conflict[{i},{j},{s}]",
+            )
+            model.addConstr(
+                entry[i, s] >= dep[j, s] - L * y[i, j, s],
+                name=f"C4b_conflict[{i},{j},{s}]",
             )
 
-            model.addConstr(
-                a[i, s] >= d[j, s] - M * y[i, j, s],
-                name=f"C4b_{i}_{j}_{s}"
-            )
-
-    # ==========================================================
+    # =========================================================================
     # Solve
-    # ==========================================================
+    # =========================================================================
+
     model.optimize()
 
-    return model, a, d, delta, y, C, final_seg
+    return model, entry, dep, delay, y, final_segment

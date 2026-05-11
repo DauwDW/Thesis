@@ -1,219 +1,358 @@
-""" 
+
+"""
 instance.py
 
-Builds a reduced MILP instance from the current SystemState.
+Builds a compact MILP rescheduling instance from the current system state.
+
+Terminology:
+    entry(t,s) = moment train enters segment s
+    exit(t,s)  = moment train leaves segment s
+
+Trein-selectie (STEP 1):
+    Delayed treinen die al gestart zijn: altijd includeren.
+    Delayed treinen die nog niet gestart zijn: alleen als sched_entry
+      van het eerste resterende segment nog in [current_time, horizon_end]
+      valt. Als de starttijd in het verleden ligt, kan de MIP de entry
+      niet meer beïnvloeden — uitsluiten voorkomt artificiële
+      objective-explosie via de continuity constraint.
+    Affected treinen: zelfde logica.
+
+Lower bound semantics (zie mip_base.py):
+    fixed_entry[(t,s)]    → lb = ub = current_time   (actief segment)
+    actual_entries[(t,s)] → lb = ub = actual_entry   (al betreden, niet actief)
+    overige segmenten     → lb = sched_entry          (geen artificiële delay)
 """
 
-from config.settings import L, EPSILON, DELTA_MAX, PSL_PASSENGER, PSL_FREIGHT, RESCHEDULING_HORIZON, CONFLICT_WINDOW
+from config.settings import (
+    L,
+    EPSILON,
+    DELTA_MAX,
+    PSL_PASSENGER,
+    PSL_FREIGHT,
+    RESCHEDULING_HORIZON,
+    CONFLICT_WINDOW,
+)
+
 from domain.segment import SegmentType
-from domain.train   import TrainType
+from domain.train import TrainType
 
 
-def build_instance(state, timetable, trains, segments, current_time, weight_passenger, weight_freight, gamma):
+# ============================================================================
+# Helpers
+# ============================================================================
+
+def has_started(state, train) -> bool:
+    try:
+        state.actual_entry(train.id, train.path[0])
+        return True
+    except KeyError:
+        return False
+
+
+def planned_entry(timetable, train_id, segment):
+    return timetable.scheduled_arrival(train_id, segment)
+
+
+def planned_exit(timetable, segments, train_id, segment):
+    if segments[segment].seg_type == SegmentType.BETWEEN_STATION:
+        return (
+            timetable.scheduled_arrival(train_id, segment)
+            + timetable.running_time(train_id, segment)
+        )
+    return (
+        timetable.scheduled_arrival(train_id, segment)
+        + timetable.dwell_time(train_id, segment)
+    )
+
+
+# ============================================================================
+# Main
+# ============================================================================
+
+def build_instance(
+    state,
+    timetable,
+    trains,
+    segments,
+    current_time,
+    weight_passenger,
+    weight_freight,
+    gamma,
+):
+
+    horizon_end = current_time + RESCHEDULING_HORIZON
 
     # =========================================================================
-    # STEP 1 — Select relevant trains (delayed + affected + within horizon)
+    # STEP 1 — Relevant trains
     # =========================================================================
 
-    delayed_trains = []
-    for t in trains.values():
-        if state.current_delay(t.id) > 0 and not state.is_finished(t.id):
-            delayed_trains.append(t)
+    delayed = []
 
-    delayed_ids = {t.id for t in delayed_trains}
-
-    affected_trains = []
-    for t in trains.values():
-        if t.id in delayed_ids or state.is_finished(t.id):
+    for train in trains.values():
+        if state.is_finished(train.id):
             continue
-        remaining_t = set(state.remaining_path(t.id))
-        for d in delayed_trains:
-            if remaining_t & set(state.remaining_path(d.id)):
-                affected_trains.append(t)
+        if state.current_delay(train.id) > 0:
+            delayed.append(train)
+
+    delayed_ids = {t.id for t in delayed}
+
+    affected = []
+
+    for train in trains.values():
+        if train.id in delayed_ids:
+            continue
+        if state.is_finished(train.id):
+            continue
+        remaining = set(state.remaining_path(train.id))
+        for d in delayed:
+            if remaining & set(state.remaining_path(d.id)):
+                affected.append(train)
                 break
 
-    # Horizon filter
-    relevant_trains = []
-    for t in (delayed_trains + affected_trains):
-        remaining = state.remaining_path(t.id)
+    relevant = []
+
+    # --- delayed trains ---
+    for train in delayed:
+        remaining = state.remaining_path(train.id)
         if not remaining:
             continue
-        try:
-            planned_start = timetable.scheduled_arrival(t.id, remaining[0])
-        except (KeyError, ValueError):
+
+        if has_started(state, train):
+            relevant.append(train)
             continue
-        if planned_start <= current_time + RESCHEDULING_HORIZON:
-            relevant_trains.append(t)
 
-    # Deduplicate
-    relevant_trains = list({t.id: t for t in relevant_trains}.values())
+        # Nog niet gestart: alleen als starttijd nog in de toekomst ligt
+        first_seg  = remaining[0]
+        start_time = planned_entry(timetable, train.id, first_seg)
 
-    T  = [t.id for t in relevant_trains]
-    Tp = [t.id for t in relevant_trains if t.train_type == TrainType.PASSENGER]
-    Tf = [t.id for t in relevant_trains if t.train_type == TrainType.FREIGHT]
+        if current_time <= start_time <= horizon_end:
+            relevant.append(train)
+
+    # --- affected trains ---
+    for train in affected:
+        remaining = state.remaining_path(train.id)
+        if not remaining:
+            continue
+
+        if has_started(state, train):
+            relevant.append(train)
+            continue
+
+        first_seg  = remaining[0]
+        start_time = planned_entry(timetable, train.id, first_seg)
+
+        if current_time <= start_time <= horizon_end:
+            relevant.append(train)
+
+    # deduplicate
+    relevant = list({t.id: t for t in relevant}.values())
 
     # =========================================================================
-    # STEP 2 — Remaining paths only
+    # STEP 2 — Sets
     # =========================================================================
+
+    T  = [t.id for t in relevant]
+    Tp = [t.id for t in relevant if t.train_type == TrainType.PASSENGER]
+    Tf = [t.id for t in relevant if t.train_type == TrainType.FREIGHT]
 
     path = {
         t.id: tuple(state.remaining_path(t.id))
-        for t in relevant_trains
+        for t in relevant
     }
 
+    S  = sorted({s for t in T for s in path[t]})
+    Ss = {s for s in S if segments[s].seg_type == SegmentType.STATION}
+    Sl = {s for s in S if segments[s].seg_type == SegmentType.BETWEEN_STATION}
+
     # =========================================================================
-    # STEP 3 — In-execution + fix_arrival
+    # STEP 3 — Timing parameters
     # =========================================================================
 
-    in_execution = {}
-    fix_arrival  = {}
+    sched_entry = {}
+    sched_exit  = {}
+    runtime     = {}
+    dwell       = {}
 
-    for t in relevant_trains:
-        seg = state.current_segment(t.id)
+    for train in relevant:
+        for seg in path[train.id]:
 
-        if seg is None or seg not in path[t.id]:
+            sched_entry[(train.id, seg)] = (
+                timetable.scheduled_arrival(train.id, seg)
+            )
+            sched_exit[(train.id, seg)] = (
+                planned_exit(timetable, segments, train.id, seg)
+            )
+
+            if seg in Sl:
+                runtime[(train.id, seg)] = timetable.running_time(train.id, seg)
+            if seg in Ss:
+                dwell[(train.id, seg)]   = timetable.dwell_time(train.id, seg)
+
+    # =========================================================================
+    # STEP 4 — Active segments + actual entries
+    #
+    # fixed_entry[(t, seg)]:
+    #   Huidig actief segment — MIP fixeert entry op current_time.
+    #
+    # occupied[(t, seg)]:
+    #   Resterende bezettingstijd van het actieve segment.
+    #
+    # actual_entries[(t, seg)]:
+    #   Segmenten die de trein al betreden heeft maar nog in path[t] zitten.
+    #   MIP fixeert entry op de werkelijke entrytijd — ligt in het verleden
+    #   en kan niet meer aangepast worden.
+    # =========================================================================
+
+    fixed_entry    = {}
+    occupied       = {}
+    actual_entries = {}
+
+    for train in relevant:
+        seg = state.current_segment(train.id)
+
+        if seg is None:
+            continue
+        if seg not in path[train.id]:
             continue
 
         try:
-            state.actual_exit(t.id, seg)
+            state.actual_exit(train.id, seg)
             continue
         except KeyError:
             pass
 
         try:
-            entry_time = state.actual_entry(t.id, seg)
+            actual_entry_time = state.actual_entry(train.id, seg)
         except KeyError:
             continue
 
-        # sched_dep = timetable.scheduled_departure(t.id, seg)
-        # if current_time > sched_dep:
-        #     continue
-
-        if segments[seg].seg_type == SegmentType.BETWEEN_STATION:
-            full_duration = timetable.running_time(t.id, seg)
+        if seg in Sl:
+            duration = runtime[(train.id, seg)]
         else:
-            try:
-                full_duration = timetable.dwell_time(t.id, seg)
-            except ValueError:
+            duration = dwell[(train.id, seg)]
+
+        remaining_time = (actual_entry_time + duration) - current_time
+
+        fixed_entry[(train.id, seg)] = current_time
+        occupied[(train.id, seg)]    = max(0.0, remaining_time)
+
+    # Segmenten die al betreden zijn maar niet het actieve segment
+    for train in relevant:
+        for seg in path[train.id]:
+            if (train.id, seg) in fixed_entry:
                 continue
-
-        expected_exit = entry_time + full_duration
-        remaining     = expected_exit - current_time
-
-        if remaining <= 0:
-            continue
-
-        fix_arrival[(t.id, seg)]  = current_time
-        in_execution[(t.id, seg)] = max(1.0, remaining)
+            try:
+                ae = state.actual_entry(train.id, seg)
+                actual_entries[(train.id, seg)] = ae
+            except KeyError:
+                pass
+    
 
     # =========================================================================
-    # STEP 4 — Segment sets
+    # STEP 5 — Conflicts
     # =========================================================================
 
-    S  = sorted({s for t_id in T for s in path[t_id]})
-    Ss = {s for s in S if segments[s].seg_type == SegmentType.STATION}
-    Sl = {s for s in S if segments[s].seg_type == SegmentType.BETWEEN_STATION}
-
-    # =========================================================================
-    # STEP 5 — Timetable parameters
-    # =========================================================================
-
-    sched_entry = {}
-    for t in relevant_trains:        # loop over alle relevante treinen
-        for s in path[t.id]:         # loop over elk resterend segment van die trein
-            sched_entry[(t.id, s)] = timetable.scheduled_arrival(t.id, s)
-
-    sched_dep = {}
-    for t in relevant_trains:
-        for s in path[t.id]:
-            sched_dep[(t.id, s)] = timetable.scheduled_departure(t.id, s)
-
-    RT = {}
-    for t in relevant_trains:
-        for s in path[t.id]:
-            if segments[s].seg_type == SegmentType.BETWEEN_STATION:
-                RT[(t.id, s)] = timetable.running_time(t.id, s)
-
-    DW = {}
-    for t in relevant_trains:
-        for s in path[t.id]:
-            if segments[s].seg_type == SegmentType.STATION:
-                DW[(t.id, s)] = timetable.dwell_time(t.id, s)
-
-    h_stop = {}
-    for t in relevant_trains:
-        for s in path[t.id]:
-            if segments[s].seg_type == SegmentType.STATION:
-                h_stop[(t.id, s)] = timetable.halts_at(t.id, s)
-
-    # =========================================================================
-    # STEP 6 — Conflict sets
-    # =========================================================================
-
-    def actual_or_sched(t_id, s):
+    def actual_or_sched_entry(train_id, seg):
         try:
-            return state.actual_entry(t_id, s)
+            return state.actual_entry(train_id, seg)
         except KeyError:
-            return sched_entry[(t_id, s)]
+            return sched_entry[(train_id, seg)]
 
-    C = {}
-    for s in S:
-        C[s] = []
+    conflicts = {s: [] for s in S}
 
-    for s in S:
-        trains_on_s = [t_id for t_id in T if s in path[t_id]]
-        for i in range(len(trains_on_s)):
-            for j in range(i + 1, len(trains_on_s)):
-                t1, t2 = trains_on_s[i], trains_on_s[j]
-                e1 = actual_or_sched(t1, s)
-                e2 = actual_or_sched(t2, s)
+    for seg in S:
+        trains_on_seg = [t for t in T if seg in path[t]]
+        for i in range(len(trains_on_seg)):
+            for j in range(i + 1, len(trains_on_seg)):
+                t1 = trains_on_seg[i]
+                t2 = trains_on_seg[j]
+                e1 = actual_or_sched_entry(t1, seg)
+                e2 = actual_or_sched_entry(t2, seg)
                 if abs(e1 - e2) <= CONFLICT_WINDOW:
-                    C[s].append((t1, t2))
-    # Enkel die paren krijgen een volgorde-constraint in de MIP. Treinparen die ver uit elkaar zitten hoeven niet geordend te worden — dat spaart binaire variabelen.
-    # =========================================================================
-    # STEP 7 — Headway
-    # =========================================================================
-
-    H = {}
-    for s in S:
-        for (i, j) in C[s]:
-            H[(i, j, s)] = 0
-            H[(j, i, s)] = 0
+                    conflicts[seg].append((t1, t2))
 
     # =========================================================================
-    # STEP 8 — Weights
+    # STEP 6 — Weights
     # =========================================================================
 
-    w   = {t.id: weight_passenger if t.train_type == TrainType.PASSENGER else weight_freight
-       for t in relevant_trains}
+    weights = {}
+    psl     = {}
 
-    psl = {
-        t.id: PSL_PASSENGER if t.train_type == TrainType.PASSENGER else PSL_FREIGHT
-        for t in relevant_trains
-    }
+    for train in relevant:
+        if train.train_type == TrainType.PASSENGER:
+            weights[train.id] = weight_passenger
+            psl[train.id]     = PSL_PASSENGER
+        else:
+            weights[train.id] = weight_freight
+            psl[train.id]     = PSL_FREIGHT
+
+    # =========================================================================
+    # Diagnostiek
+    # =========================================================================
+
+    print(f"Treinen in instance: {len(T)}")
+    print(f"  Gestart: {sum(1 for t in relevant if has_started(state, t))}, "
+          f"Nog niet gestart: {sum(1 for t in relevant if not has_started(state, t))}")
+    delays = [(t.id, state.current_delay(t.id)) for t in relevant]
+    delays.sort(key=lambda x: -x[1])
+    print(f"  Top 5 vertraagd: {delays[:5]}")
+    print(f"  Gemiddelde delay: {sum(d for _, d in delays) / max(1, len(delays)):.0f}s")
+
+    # Niet-gestarte treinen met sched_entry in verleden
+    # Check alle treinen in instance op grote implied delays
+    print(f"\n--- Instance diagnostiek t={current_time:.0f}s ---")
+    for train in relevant:
+        t_id = train.id
+        remaining_segs = path.get(t_id, ())
+        if not remaining_segs:
+            continue
+        last_seg = remaining_segs[-1]
+        se_last = sched_entry.get((t_id, last_seg), 0)
+        
+        # Wat is de effectieve lb voor het eerste segment?
+        first_seg = remaining_segs[0]
+        if (t_id, first_seg) in fixed_entry:
+            lb_first = fixed_entry[(t_id, first_seg)]
+            kind = "fixed"
+        elif (t_id, first_seg) in actual_entries:
+            lb_first = actual_entries[(t_id, first_seg)]
+            kind = "actual"
+        else:
+            lb_first = sched_entry.get((t_id, first_seg), 0)
+            kind = "sched"
+        
+        implied_delay = max(0, lb_first - se_last)
+        if implied_delay > 500:
+            print(f"  🔴 trein {t_id}: lb_first={lb_first:.0f}s ({kind}) "
+                f"sched_last={se_last:.0f}s "
+                f"implied_delay>={implied_delay:.0f}s "
+                f"n_segs={len(remaining_segs)}")
 
     # =========================================================================
     # RETURN
     # =========================================================================
 
     return dict(
-        T=T, Tp=Tp, Tf=Tf,
-        S=S, Ss=Ss, Sl=Sl,
+        T=T,
+        Tp=Tp,
+        Tf=Tf,
+        S=S,
+        Ss=Ss,
+        Sl=Sl,
         path=path,
         sched_entry=sched_entry,
-        sched_dep=sched_dep,
-        RT=RT,
-        DW=DW,
-        H=H,
-        h_stop=h_stop,
-        w=w,
+        sched_exit=sched_exit,
+        runtime=runtime,
+        dwell=dwell,
+        occupied=occupied,
+        fixed_entry=fixed_entry,
+        actual_entries=actual_entries,
+        conflicts=conflicts,
+        weights=weights,
         psl=psl,
         L=L,
-        gamma= gamma,
         epsilon=EPSILON,
         delta_max=DELTA_MAX,
-        in_execution=in_execution,
-        fix_arrival=fix_arrival,
-        current_time = current_time,
-        C=C
+        gamma=gamma,
+        current_time=current_time,
     )

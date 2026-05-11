@@ -18,17 +18,19 @@
 #   actual_exit(t, s)  = D_t,s actueel — moment trein segment verlaat   (seconden)
 #   actual_exit is None zolang de trein het segment nog niet verlaten heeft.
 #
-# Schrijf-interface (uitsluitend via de engine):
-#   record_entry / record_exit — aangeroepen door simulator.py bij events
-#   advance_time               — aangeroepen door simulator.py bij elke tijdstap
+# Atomaire overgang (nieuwe architectuur):
+#   record_exit(N) en record_entry(N+1) worden altijd samen aangeroepen
+#   in _handle_ready_to_exit. Er bestaat nooit een toestand waarbij
+#   actual_exit(N) geregistreerd is maar actual_entry(N+1) ontbreekt,
+#   tenzij N het laatste segment is.
 #
-# Naamgeving afgestemd met partner (model/, controller/):
-#   actual_entry  ←→  actual_arrival  in controller/controller.py en model/instance.py
-#   → partner past hun code aan naar actual_entry
+# Schrijf-interface (uitsluitend via simulator.py):
+#   record_entry / record_exit — aangeroepen bij atomaire transfer of terminale exit
+#   advance_time               — aangeroepen bij elk event in de event-loop
 #
 # Verantwoordelijkheidsgrenzen:
-#   apply_solution → simulator.py   (herbouwt event-queue op basis van MIP-tijden)
-#   apply_fcfs     → event_queue.py (herordent events in de queue)
+#   _apply_solution → simulator.py (herbouwt event-queue op basis van MIP-tijden)
+#   _apply_fcfs     → simulator.py (past dispatcher-priorities aan op basis van FCFS)
 
 from __future__ import annotations
 
@@ -76,12 +78,10 @@ class SystemState:
         self._timetable = timetable
         self._time      = start_time
 
-        # Actuele tijden — leeg bij opstart, gevuld door engine via record_entry/record_exit
         self._actual: dict[int, dict[str, tuple[float | None, float | None]]] = {
             train_id: {} for train_id in trains
         }
 
-        # Huidig actief segment per trein — None = nog niet gestart of al klaar
         self._current_segment: dict[int, str | None] = {
             train_id: None for train_id in trains
         }
@@ -117,7 +117,8 @@ class SystemState:
         """
         Registreert dat trein train_id segment segment_id binnengekomen is.
 
-        Wordt aangeroepen door simulator.py bij een TrainEntered-event.
+        In de atomaire architectuur wordt dit altijd samen met record_exit
+        van het vorige segment aangeroepen (behalve voor het eerste segment).
 
         Parameters
         ----------
@@ -132,8 +133,8 @@ class SystemState:
         """
         Registreert dat trein train_id segment segment_id verlaten heeft.
 
-        Wordt aangeroepen door simulator.py bij een TrainExited-event.
-        Als het het laatste segment is, wordt _current_segment op None gezet.
+        Wordt aangeroepen bij atomaire transfer naar het volgende segment,
+        of bij terminale exit (laatste segment van het pad).
 
         Parameters
         ----------
@@ -147,13 +148,19 @@ class SystemState:
         train = self._trains[train_id]
         if segment_id == train.last_segment:
             self._current_segment[train_id] = None
-        # Anders: _current_segment wordt bij de volgende record_entry bijgewerkt
 
     # ==========================================================================
     # Public interface — aangeroepen door controller/ en model/
     # ==========================================================================
 
     def remaining_path(self, train_id: int) -> list[str]:
+        """
+        Geeft de resterende segmenten in het pad van trein train_id.
+
+        Voor niet-gestarte treinen: volledig pad.
+        Voor actieve treinen: huidig segment t/m laatste.
+        Voor afgewerkte treinen: lege lijst.
+        """
         train = self._trains[train_id]
         current = self._current_segment[train_id]
         actual = self._actual[train_id]
@@ -179,12 +186,10 @@ class SystemState:
         Geeft de huidige vertraging van trein train_id in seconden.
 
         Vertraging = actuele exit van het laatste verlaten segment
-                − geplande exit van datzelfde segment.
+                   − geplande exit van datzelfde segment.
 
-        Afgekapt op 0.0: within-station-passing treinen kunnen vroeger
-        dan gepland vertrekken (C2 geldt enkel bij h_stop=1), maar een
-        negatieve offset telt als 0 vertraging voor de trigger-logica.
-        Gebruik actual_exit() direct voor de ruwe offset.
+        Afgekapt op 0.0: negatieve offsets tellen niet als vertraging
+        voor de trigger-logica. Gebruik actual_exit() voor de ruwe offset.
 
         Returns 0.0 als de trein nog geen enkel segment verlaten heeft.
         """
@@ -197,66 +202,43 @@ class SystemState:
                 planned_exit = self._timetable.scheduled_departure(train_id, seg_id)
                 return max(0.0, exit_ - planned_exit)
 
-        return 0.0  # trein heeft nog geen segment verlaten
+        return 0.0
 
     def is_finished(self, train_id: int) -> bool:
-        """
-        True als de trein zijn volledige pad afgelegd heeft.
-
-        Een trein is klaar als het laatste segment in zijn pad een
-        gekende actual_exit heeft.
-
-        Parameters
-        ----------
-        train_id : int
-
-        Returns
-        -------
-        bool
-        """
+        """True als de trein zijn volledige pad afgelegd heeft."""
         train    = self._trains[train_id]
         _, exit_ = self._actual[train_id].get(train.last_segment, (None, None))
         return exit_ is not None
 
     def active_train_ids(self) -> list[int]:
         """
-        Geeft de ids van alle treinen die actief zijn (gestart, niet klaar).
+        Geeft ids van alle treinen die actief zijn op het netwerk.
 
-        Een trein is actief als hij minstens één segment binnengekomen is
-        maar het laatste segment nog niet verlaten heeft.
-
-        Returns
-        -------
-        list[int]
+        Actief = minstens één segment betreden EN nog niet volledig afgewerkt.
+        Niet-gestarte treinen zijn hier niet in opgenomen — zie remaining_path()
+        voor treinen die het netwerk nog niet betreden hebben.
         """
-        return [
-            train_id for train_id in self._trains
-            if self._actual[train_id]           # minstens één entry geregistreerd
-            and not self.is_finished(train_id)
-        ]
+        active = []
+        for train_id in self._trains:
+            if not self._actual[train_id]:
+                continue
+            if self.is_finished(train_id):
+                continue
+            active.append(train_id)
+        return active
 
     def actual_entry(self, train_id: int, segment_id: str) -> float:
         """
         Actuele entrytijd (A_t,s) van trein train_id op segment segment_id.
 
-        Parameters
-        ----------
-        train_id   : int
-        segment_id : str
-
-        Returns
-        -------
-        float — actual entry in seconden
-
         Raises
         ------
-        KeyError als de trein het segment nog niet binnengekomen is
+        KeyError als de trein het segment nog niet binnengekomen is.
         """
         entry, _ = self._actual[train_id].get(segment_id, (None, None))
         if entry is None:
             raise KeyError(
-                f"Geen actual_entry voor trein {train_id} op segment '{segment_id}' "
-                f"— trein heeft dit segment nog niet betreden"
+                f"Geen actual_entry voor trein {train_id} op segment '{segment_id}'"
             )
         return entry
 
@@ -264,24 +246,14 @@ class SystemState:
         """
         Actuele exittijd (D_t,s) van trein train_id op segment segment_id.
 
-        Parameters
-        ----------
-        train_id   : int
-        segment_id : str
-
-        Returns
-        -------
-        float — actual exit in seconden
-
         Raises
         ------
-        KeyError als de trein het segment nog niet verlaten heeft
+        KeyError als de trein het segment nog niet verlaten heeft.
         """
         _, exit_ = self._actual[train_id].get(segment_id, (None, None))
         if exit_ is None:
             raise KeyError(
-                f"Geen actual_exit voor trein {train_id} op segment '{segment_id}' "
-                f"— trein heeft dit segment nog niet verlaten"
+                f"Geen actual_exit voor trein {train_id} op segment '{segment_id}'"
             )
         return exit_
 
@@ -292,20 +264,15 @@ class SystemState:
     def current_segment(self, train_id: int) -> str | None:
         """
         Huidig actief segment van trein train_id.
-
         Returns None als trein nog niet gestart of al klaar is.
         """
         return self._current_segment[train_id]
 
     def summary(self) -> str:
-        """
-        Korte samenvatting van de huidige toestand — voor logging en debugging.
-        """
         n_total    = len(self._trains)
         n_active   = len(self.active_train_ids())
         n_finished = sum(1 for t_id in self._trains if self.is_finished(t_id))
         n_waiting  = n_total - n_active - n_finished
-
         return (
             f"SystemState(t={self._time:.0f}s | "
             f"actief={n_active}, klaar={n_finished}, wachtend={n_waiting})"

@@ -147,7 +147,6 @@ def compute_metrics(df: pd.DataFrame) -> dict:
         return _empty_metrics()
 
     # --- Laatste segment per trein ---
-    # Laatste segment = rij met de hoogste planned_entry per trein
     last_seg = (
         df.sort_values('planned_entry')
           .groupby(['train_id', 'train_type'])
@@ -237,38 +236,16 @@ def build_result_row(
     """
     Bouwt één volledige resultatenrij op voor opslag in raw_runs.csv.
 
-    Combineert:
-    - Identificatie (seed, fase)
-    - Experimentele configuratie (timing, priority, objective, vaste params)
-    - Performantiemetrieken (uit compute_metrics)
-    - Solver effort (uit meta['controller_summary'] van run_simulation)
-
-    Parameters
-    ----------
-    seed               : int   — random seed van deze run
-    phase              : int   — 1, 2 of 3
-    metrics            : dict  — output van compute_metrics()
-    meta               : dict  — output van run_simulation() (derde return waarde)
-    strategy_type      : str   — 'periodic', 'event_driven', 'hybrid'
-    periodic_rf        : int   — periodieke reschedulingfrequentie (s)
-    event_driven_rf    : int   — event-driven reschedulingfrequentie (s)
-    controller_freq    : int   — controllerfrequentie (s)
-    threshold_conf     : float — drempelconfidentie MC (0.4/0.6/0.8)
-    priority           : str   — 'no_priority', 'static', 'dynamic'
-    weight_passenger   : int   — gewicht passagierstrein in objective
-    weight_freight     : int   — gewicht goederentrein in objective
-    gamma              : float — vertragingsdrempel dynamic priority (s)
-    upgrade            : int   — upgradegrootte dynamic priority (+1/+2/+3)
-    objective          : str   — 'final_delay' of 'arrival_delay'
-    freight_pct        : float — aandeel goederentreinen (0.05/0.15/0.25)
-    mc_delay_per_train : float — MC threshold per actieve trein (s)
-    solver_timeout     : int   — max solver tijd per aanroep (s)
-
-    Returns
-    -------
-    dict — één rij klaar voor opslag in raw_runs.csv
+    De kolom 'deadlock' wordt altijd toegevoegd op basis van
+    meta['deadlock_detected']. Bij een deadlock-run zijn alle metric-waarden
+    None — de kolomvolgorde blijft consistent zodat CSV-append correct werkt.
     """
-    ctrl = meta.get('controller_summary', {})
+    ctrl             = meta.get('controller_summary', {})
+    deadlock         = meta.get('deadlock_detected', False)
+
+    # Metrics altijd via _empty_metrics() als deadlock, anders via argument.
+    # Dit garandeert dat de kolomvolgorde identiek is voor elke rij.
+    safe_metrics = _empty_metrics() if deadlock else metrics
 
     row = {
         # --- Identificatie ---
@@ -297,15 +274,29 @@ def build_result_row(
         'mc_delay_per_train': mc_delay_per_train,
         'solver_timeout':     solver_timeout,
 
-        # --- Solver effort — uit meta['controller_summary'] ---
+        # --- Solver effort ---
         'total_solve_time':   ctrl.get('total_solver_runtime_s'),
         'n_rescheduled':      ctrl.get('n_rescheduled'),
         'n_fcfs_fallback':    ctrl.get('n_fcfs_fallback'),
         'n_skipped':          ctrl.get('n_skipped'),
         'infeasible_run':     ctrl.get('n_fcfs_fallback', 0) > 0,
+
+        # --- Deadlock markering ---
+        # True = run incomplete wegens deadlock, uitgesloten van aggregatie.
+        'deadlock':           deadlock,
+
+        # --- Metrics (altijd in vaste volgorde) ---
+        'TED_passenger':      safe_metrics.get('TED_passenger'),
+        'TED_freight':        safe_metrics.get('TED_freight'),
+        'TED_combined':       safe_metrics.get('TED_combined'),
+        'TAD_passenger':      safe_metrics.get('TAD_passenger'),
+        'TAD_freight':        safe_metrics.get('TAD_freight'),
+        'TAD_combined':       safe_metrics.get('TAD_combined'),
+        'delay_ratio':        safe_metrics.get('delay_ratio'),
+        'n_passenger':        safe_metrics.get('n_passenger'),
+        'n_freight':          safe_metrics.get('n_freight'),
     }
 
-    row.update(metrics)
     return row
 
 
@@ -319,12 +310,6 @@ def save_result_row(row: dict, config_dir: Path | str) -> None:
 
     Maakt de map en het bestand aan als ze nog niet bestaan.
     Appended anders zonder header.
-
-    Parameters
-    ----------
-    row        : dict        — output van build_result_row()
-    config_dir : Path | str  — pad naar de configuratiemap
-                               (bv. results/n182_periodic_static_wp2_wf1_g180)
     """
     config_dir  = Path(config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -339,8 +324,8 @@ def aggregate_config(config_dir: Path | str) -> pd.DataFrame:
     """
     Aggregeert alle seed-runs van één configuratie naar één rij.
 
-    Leest raw_runs.csv uit de configuratiemap, berekent mean en std
-    voor alle metric kolommen, en slaat het resultaat op als aggregated.csv.
+    Deadlock-runs (deadlock=True) worden uitgesloten van de aggregatie.
+    Ze tellen wel mee in n_runs en n_deadlocks voor rapportage.
 
     Parameters
     ----------
@@ -350,30 +335,41 @@ def aggregate_config(config_dir: Path | str) -> pd.DataFrame:
     -------
     pd.DataFrame met één rij — de geaggregeerde resultaten
     """
-    config_dir  = Path(config_dir)
-    raw_path    = config_dir / 'raw_runs.csv'
+    config_dir = Path(config_dir)
+    raw_path   = config_dir / 'raw_runs.csv'
 
     if not raw_path.exists():
         raise FileNotFoundError(f"raw_runs.csv niet gevonden in {config_dir}")
 
     df = pd.read_csv(raw_path)
 
-    # Configuratiekolommen — neem eerste rij (identiek voor alle seeds)
+    # Splits deadlock-runs en complete runs
+    if 'deadlock' in df.columns:
+        n_deadlocks = int(df['deadlock'].sum())
+        df_complete = df[df['deadlock'] != True].copy()
+    else:
+        n_deadlocks = 0
+        df_complete = df.copy()
+
+    # Configuratiekolommen — neem eerste rij van complete runs
+    source = df_complete if not df_complete.empty else df
     config_vals = {
-        col: df[col].iloc[0]
+        col: source[col].iloc[0]
         for col in _CONFIG_COLS
-        if col in df.columns
+        if col in source.columns
     }
 
-    # Robuustheid
     config_vals['n_runs']       = len(df)
-    config_vals['n_infeasible'] = int(df['infeasible_run'].sum()) if 'infeasible_run' in df.columns else 0
+    config_vals['n_complete']   = len(df_complete)
+    config_vals['n_deadlocks']  = n_deadlocks
+    config_vals['n_infeasible'] = int(df_complete['infeasible_run'].sum()) \
+                                  if 'infeasible_run' in df_complete.columns else 0
 
-    # Mean en std per metric kolom
+    # Mean en std enkel over complete runs
     for col in _METRIC_COLS:
-        if col in df.columns:
-            config_vals[f'{col}_mean'] = df[col].mean()
-            config_vals[f'{col}_std']  = df[col].std()
+        if col in df_complete.columns:
+            config_vals[f'{col}_mean'] = df_complete[col].mean()
+            config_vals[f'{col}_std']  = df_complete[col].std()
 
     agg_df = pd.DataFrame([config_vals])
     agg_df.to_csv(config_dir / 'aggregated.csv', index=False)
@@ -384,16 +380,6 @@ def aggregate_config(config_dir: Path | str) -> pd.DataFrame:
 def load_all_aggregated(results_dir: Path | str = 'results') -> pd.DataFrame:
     """
     Laadt alle aggregated.csv bestanden uit alle configuratiemappen.
-
-    Gebruik dit voor de volledige analyse over alle fasen en configuraties.
-
-    Parameters
-    ----------
-    results_dir : Path | str — hoofdmap met alle configuratiemappen
-
-    Returns
-    -------
-    pd.DataFrame met één rij per configuratie
     """
     results_dir = Path(results_dir)
     frames      = []

@@ -23,6 +23,7 @@ GOLD_DIR          = Path("/Users/ddw/Desktop/Rescheduling/data/gold")
 # Simulatie
 # =============================================================================
 SIMULATION_SEED = 42
+DISPATCHER_POLL_INTERVAL = 10.0
 
 # =============================================================================
 # Freight sampling
@@ -55,6 +56,6 @@ CONFLICT_WINDOW      = 600
 # =============================================================================
 # Monte Carlo trigger
 # =============================================================================
-MC_DELAY_PER_TRAIN = 10
+MC_DELAY_PER_TRAIN = 40
 MC_ITERATIONS        = 5
 THRESHOLD_CONFIDENCE = 0.6

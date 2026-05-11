@@ -12,22 +12,31 @@ Monte Carlo rollout
 Elke rollout simuleert het resterende pad van alle actieve treinen zonder
 rescheduling. FCFS op operationele tijden: wie fysiek het eerst aankomt bij
 een segment, gaat eerst. Delay propagation via seg_free_at (wanneer het
-segment vrij komt). Rijtijden worden gesampeld via sample_running_time()
-uit reality/sampling.py.
+segment vrij komt). Rijtijden worden gesampeld via sample_duration()
+uit simulation/simulator.py — inclusief timetable-fallback voor segmenten
+zonder empirische data.
 
 Performance threshold
 ---------------------
-De drempel wordt bij elke evaluatie dynamisch bepaald als:
+De drempel wordt uitgedrukt als gemiddelde vertraging per actieve trein:
 
-    performance_threshold = current_metric + n_active * MC_DELAY_PER_TRAIN
+    performance_threshold = avg_delay_at_last_reschedule + MC_DELAY_PER_TRAIN
 
-waarbij current_metric de huidige totale systeemvertraging is en n_active
-het aantal actieve treinen op het moment van evaluatie. De threshold schaalt
-mee met de netwerkbelasting: bij meer actieve treinen is een grotere absolute
-toename nodig om de solver te activeren.
+waarbij avg_delay_at_last_reschedule de gemiddelde vertraging per actieve trein
+was op het moment van de eerste evaluatie na de laatste reschedule.
 
-De threshold wordt gereset na elke reschedule zodat hij herberekend wordt
-op basis van de nieuwe systeemtoestand.
+De rollout geeft eveneens een gemiddelde vertraging per trein terug, zodat
+threshold en rollout op dezelfde schaal staan en de vergelijking
+    rollout > threshold
+betekent: "de verwachte gemiddelde vertraging per trein is significant slechter
+dan op het moment van de laatste ingreep."
+
+Door te werken met gemiddelden i.p.v. absolute sommen is de threshold robuust
+tegen wisselende treinpopulaties: treinen die finishen of nieuw opstarten
+beïnvloeden de threshold niet.
+
+De threshold wordt gereset na elke reschedule en opnieuw bepaald bij de
+eerste evaluatie erna.
 
 Verantwoordelijkheid caller (controller.py)
 -------------------------------------------
@@ -43,8 +52,7 @@ import logging
 import numpy as np
 from domain import SegmentType
 
-from simulation.simulator import sample_duration
-
+from simulation.simulator import sample_duration, _seconds_to_period
 from config.settings import (
     MC_DELAY_PER_TRAIN,
     MC_ITERATIONS,
@@ -129,17 +137,10 @@ class EventDrivenTrigger(BaseTrigger):
     controller_freq      : float       — min seconden tussen twee evaluaties (<= event_driven_freq)
     threshold_confidence : float       — fractie rollouts boven drempel om solver te vuren
     mc_iterations        : int         — aantal rollouts per evaluatie
-    mc_delay_per_train   : float       — extra vertraging per actieve trein voor drempelberekening (s)
-    performance_threshold: float|None  — drempelwaarde; None = lazy init bij eerste evaluatie,
-                                         wordt gereset naar None na elke reschedule
+    mc_delay_per_train   : float       — toegestane extra gemiddelde vertraging per trein (s)
+    performance_threshold: float|None  — drempelwaarde (gem. delay/trein); None = lazy init
+                                         bij eerste evaluatie na reschedule
     rng                  : np.random.Generator | None
-
-    Noot: performance_threshold wordt gereset na notify_rescheduled() zodat de
-    drempel herberekend wordt op basis van de toestand ná reschedule. Dit voorkomt
-    dat een verouderde drempel de triggergevoeligheid structureel vertekent.
-
-    Noot: elke rollout gebruikt een child-RNG afgeleid van self._rng voor
-    reproduceerbaarheid — hernummering van rollouts verandert andere resultaten niet.
     """
 
     def __init__(
@@ -171,9 +172,6 @@ class EventDrivenTrigger(BaseTrigger):
 
     def notify_rescheduled(self, current_time: float):
         super().notify_rescheduled(current_time)
-        # Reset drempel na reschedule zodat hij herberekend wordt op
-        # de nieuwe toestand — verouderde drempel zou triggergevoeligheid
-        # structureel kunnen vertekenen na een succesvolle of mislukte reschedule.
         self.performance_threshold = None
 
     def should_reschedule(self, state, current_time: float) -> bool:
@@ -181,7 +179,6 @@ class EventDrivenTrigger(BaseTrigger):
             return False
         if self._time_since_evaluation(current_time) < self.controller_freq:
             return False
-        # Monte Carlo draait pas hier — notify_evaluated pas resetten na de MC
         result = self._estimate_confidence(state, current_time) >= self.threshold_confidence
         self.notify_evaluated(current_time)
         return result
@@ -191,26 +188,20 @@ class EventDrivenTrigger(BaseTrigger):
     # ------------------------------------------------------------------
 
     def _estimate_confidence(self, state, current_time: float) -> float:
-        current_metric = self._total_delay(state)
-        n_active       = len(state.active_train_ids())
+        n_active = len(state.active_train_ids())
 
         if self.performance_threshold is None:
-            # Drempel = huidige systeemvertraging + n_active * mc_delay_per_train
-            # Schaalt mee met de netwerkbelasting op het moment van evaluatie.
-            self.performance_threshold = (
-                current_metric + n_active * self.mc_delay_per_train
-            )
+            avg_delay = self._avg_delay_per_train(state)
+            self.performance_threshold = avg_delay + self.mc_delay_per_train
             logger.debug(
-                f"MC threshold initialiseerd op: {self.performance_threshold:.1f}s "
-                f"(current={current_metric:.1f}s, "
-                f"n_active={n_active}, "
-                f"per_train={self.mc_delay_per_train}s)"
+                f"MC threshold initialiseerd op: {self.performance_threshold:.1f}s/trein "
+                f"(avg_delay={avg_delay:.1f}s, "
+                f"per_train_margin={self.mc_delay_per_train}s, "
+                f"n_active={n_active})"
             )
 
         worse = sum(
             1 for i in range(self.mc_iterations)
-            # child-RNG per rollout — reproduceerbaarheid gegarandeerd
-            # ongeacht hernummering of volgorde van rollouts.
             if self._run_mc_rollout(
                 state,
                 current_time,
@@ -220,7 +211,7 @@ class EventDrivenTrigger(BaseTrigger):
         confidence = worse / self.mc_iterations
         logger.debug(
             f"MC: {worse}/{self.mc_iterations} boven drempel "
-            f"({self.performance_threshold:.1f}s) -> confidence={confidence:.2f}"
+            f"({self.performance_threshold:.1f}s/trein) -> confidence={confidence:.2f}"
         )
         return confidence
 
@@ -232,31 +223,24 @@ class EventDrivenTrigger(BaseTrigger):
     ) -> float:
         """
         Simuleert het resterende pad van alle actieve treinen zonder rescheduling.
-        FCFS op operationele tijden: wie het eerst fysiek aankomt, gaat eerst.
-        Delay propagation via seg_free_at.
+        FCFS op operationele tijden. Delay propagation via seg_free_at.
 
-        Parameters
-        ----------
-        state        : SystemState
-        current_time : float
-        rng          : np.random.Generator — per-rollout RNG voor reproduceerbaarheid
+        Rijtijden worden gesampeld via sample_duration() — dezelfde functie
+        als de simulator, inclusief timetable-fallback voor segmenten zonder
+        empirische data (STATION-segmenten, ontbrekende dynamics, etc.).
 
         Returns
         -------
-        float — geprojecteerde totaalvertraging (seconden)
+        float — geprojecteerde gemiddelde eindvertraging per actieve trein (s).
         """
-        # seg_free_at[seg_id] = tijdstip waarop het segment vrij komt
         seg_free_at: dict[str, float] = {}
+        start:       dict[int, float] = {}
+        active_seg:  dict[int, str | None] = {}
 
-        # Startpunt per trein: wanneer is hij vrij voor zijn eerste resterende segment?
-        start: dict[int, float] = {}
+        active_ids = list(state.active_train_ids())
 
-        # Bepaal per trein het startpunt én registreer seg_free_at voor het
-        # huidig actieve segment. Het actieve segment wordt in de hoofdlus
-        # overgeslagen om dubbele sampling te vermijden.
-        active_seg: dict[int, str | None] = {}
-
-        for train_id in state.active_train_ids():
+        # --- Startfase: bepaal startpunt per trein ---
+        for train_id in active_ids:
             train          = self._trains.get(train_id)
             remaining_path = state.remaining_path(train_id)
             if train is None or not remaining_path:
@@ -266,30 +250,37 @@ class EventDrivenTrigger(BaseTrigger):
             active_seg[train_id] = current_seg
 
             if current_seg is not None and current_seg in remaining_path:
-                # Mid-segment: sample resterende duur
                 try:
                     entry_time = state.actual_entry(train_id, current_seg)
                 except KeyError:
                     entry_time = current_time
-                elapsed  = current_time - entry_time
+
+                elapsed = current_time - entry_time
+
+                # sample_duration heeft altijd een geldige returnwaarde —
+                # fallback via timetable ingebakken.
                 full_dur = sample_duration(
-                    train      = self._trains[train_id],
+                    train      = train,
                     segment    = self._segments[current_seg],
                     timetable  = self._timetable,
                     entry_time = entry_time,
                     rng        = rng,
                 )
+
                 proj_exit = current_time + max(1.0, full_dur - elapsed)
-                seg_free_at[current_seg] = max(seg_free_at.get(current_seg, 0.0), proj_exit)
+                seg_free_at[current_seg] = max(
+                    seg_free_at.get(current_seg, 0.0), proj_exit
+                )
                 start[train_id] = proj_exit
+
             else:
-                # Tussen segmenten: start vanaf actual_exit van laatste afgerond segment
-                start[train_id] = self._last_exit(state, self._trains[train_id], current_time)
+                start[train_id] = self._last_exit(state, train, current_time)
 
-        # Simuleer elke trein over zijn resterende pad
+        # --- Hoofdlus: simuleer elk volgend segment ---
         total_delay = 0.0
+        n_simulated = 0
 
-        for train_id in state.active_train_ids():
+        for train_id in active_ids:
             train          = self._trains.get(train_id)
             remaining_path = state.remaining_path(train_id)
             if train is None or not remaining_path or train_id not in start:
@@ -297,9 +288,6 @@ class EventDrivenTrigger(BaseTrigger):
 
             t = start[train_id]
 
-            # Sla het huidig actieve segment over in de hoofdlus — het is al
-            # gesimuleerd in de startfase hierboven. Zonder deze skip wordt het
-            # segment dubbel gesimuleerd met een nieuwe sample_duration.
             current_seg = active_seg.get(train_id)
             path_to_simulate = (
                 remaining_path[1:]
@@ -310,10 +298,14 @@ class EventDrivenTrigger(BaseTrigger):
             )
 
             for seg_id in path_to_simulate:
+                segment = self._segments.get(seg_id)
+                if segment is None:
+                    continue
+
                 # FCFS: wacht tot segment vrij is
                 t = max(t, seg_free_at.get(seg_id, 0.0))
 
-                segment  = self._segments.get(seg_id)
+                # sample_duration: altijd geldig, timetable-fallback ingebakken
                 duration = sample_duration(
                     train      = train,
                     segment    = segment,
@@ -322,7 +314,7 @@ class EventDrivenTrigger(BaseTrigger):
                     rng        = rng,
                 )
 
-                if segment is not None and segment.seg_type == SegmentType.STATION:
+                if segment.seg_type == SegmentType.STATION:
                     # C2: niet vroeger vertrekken dan gepland
                     try:
                         t = max(
@@ -341,19 +333,14 @@ class EventDrivenTrigger(BaseTrigger):
             try:
                 planned     = self._timetable.scheduled_departure(train_id, last_seg)
                 total_delay += max(0.0, t - planned)
+                n_simulated += 1
             except KeyError:
                 pass
 
-        return total_delay
+        return total_delay / max(1, n_simulated)
 
     def _last_exit(self, state, train, current_time: float) -> float:
-        """
-        actual_exit van het laatste afgeronde segment, of current_time als fallback.
-
-        Noot: actual_exit gooit KeyError zowel als het segment nooit betreden is
-        als als de exit nog None is (trein is er nog in). Beide gevallen worden
-        correct overgeslagen door de try/except.
-        """
+        """actual_exit van het laatste afgeronde segment, of current_time als fallback."""
         for seg_id in reversed(train.path):
             try:
                 return state.actual_exit(train.id, seg_id)
@@ -361,9 +348,14 @@ class EventDrivenTrigger(BaseTrigger):
                 continue
         return current_time
 
-    def _total_delay(self, state) -> float:
+    def _avg_delay_per_train(self, state) -> float:
+        """Gemiddelde huidige vertraging per actieve trein (seconden)."""
         try:
-            return sum(state.current_delay(t_id) for t_id in state.active_train_ids())
+            active_ids = list(state.active_train_ids())
+            if not active_ids:
+                return 0.0
+            total = sum(state.current_delay(t_id) for t_id in active_ids)
+            return total / len(active_ids)
         except AttributeError:
             return 0.0
 

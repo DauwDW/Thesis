@@ -6,20 +6,34 @@ de controller en voert de discrete-event simulatie uit.
 
 Gebruik
 -------
-    from run_simulation import run_simulation, load_all_runs
+    from run_simulation import run_simulation
 
-    state, df, meta = run_simulation(
-        n_freight          = 300,
+    state, df, meta, config_dir = run_simulation(
+        n_freight          = 182,
         trigger_strategy   = "hybrid",
         objective_strategy = "static",
         seed               = 42,
     )
 
-    runs = load_all_runs()
-    runs[runs["seed"] == 42]
+Deadlock-afhandeling
+--------------------
+Als de simulator een DeadlockDetected exception gooit, wordt de run als
+incomplete gemarkeerd via meta["deadlock_detected"] = True.
+
+Twee dingen worden opgeslagen (als save=True):
+  1. Partiële df als parquet met suffix _deadlock
+     (bevat segmenten tot op het deadlock-moment)
+  2. config_dir wordt altijd teruggegeven zodat de caller
+     een result row met deadlock=True kan opslaan
+
+Opslagstructuur (save=True)
+---------------------------
+    <output_dir>/
+      <config_name>/
+        <run_name>.parquet           — complete run
+        <run_name>_deadlock.parquet  — incomplete run (deadlock)
 """
 
-import json
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -28,7 +42,7 @@ import config.settings as settings
 from data.loader           import load_all
 from controller.controller import Controller
 from controller.triggers   import make_trigger
-from simulation.simulator  import Simulator
+from simulation.simulator  import Simulator, DeadlockDetected
 
 
 # =============================================================================
@@ -37,8 +51,7 @@ from simulation.simulator  import Simulator
 
 def _build_trigger(trigger_strategy, trains, segments, timetable,
                    event_driven_freq, controller_freq,
-                   periodic_freq, threshold_confidence, rng):
-    """Bouwt de juiste trigger op basis van de gekozen strategie."""
+                   periodic_freq, threshold_confidence, mc_delay_per_train, rng):
     if trigger_strategy == "periodic":
         return make_trigger("periodic",
                             periodic_freq=periodic_freq)
@@ -51,6 +64,7 @@ def _build_trigger(trigger_strategy, trains, segments, timetable,
                             event_driven_freq=event_driven_freq,
                             controller_freq=controller_freq,
                             threshold_confidence=threshold_confidence,
+                            mc_delay_per_train=mc_delay_per_train,
                             rng=rng)
 
     if trigger_strategy == "hybrid":
@@ -62,6 +76,7 @@ def _build_trigger(trigger_strategy, trains, segments, timetable,
                             controller_freq=controller_freq,
                             periodic_freq=periodic_freq,
                             threshold_confidence=threshold_confidence,
+                            mc_delay_per_train=mc_delay_per_train,
                             rng=rng)
 
     raise ValueError(f"Onbekende trigger_strategy: '{trigger_strategy}'. "
@@ -71,12 +86,8 @@ def _build_trigger(trigger_strategy, trains, segments, timetable,
 def results_to_dataframe(state, trains, timetable):
     """
     Bouwt een DataFrame met één rij per (train_id, segment_id).
-
-    Kolommen
-    --------
-    train_id, train_type, train_subtype, segment_id,
-    planned_entry, planned_exit, actual_entry, actual_exit,
-    entry_delay, exit_delay
+    Bij een deadlock-run bevat dit alleen de segmenten die voor
+    de deadlock volledig afgerond waren.
     """
     records = []
 
@@ -112,99 +123,59 @@ def results_to_dataframe(state, trains, timetable):
 
 
 def _build_config_name(params):
-    """Mapnaam op basis van alle parameters behalve seed."""
-    return (
+    strategy  = params['trigger_strategy']
+    objective = params['objective_strategy']
+
+    base = (
         f"n{params['n_freight']}"
-        f"_{params['trigger_strategy']}"
-        f"_{params['objective_strategy']}"
+        f"_{strategy}"
+        f"_{objective}"
         f"_wp{params['weight_passenger']}"
         f"_wf{params['weight_freight']}"
-        f"_g{int(params['dynamic_threshold'])}"
-        f"_edf{int(params['event_driven_freq'])}"
-        f"_cf{int(params['controller_freq'])}"
-        f"_pf{int(params['periodic_freq'])}"
-        f"_tc{params['threshold_confidence']}"
     )
+
+    if objective == 'dynamic':
+        base += f"_g{int(params['dynamic_threshold'])}"
+
+    if strategy == 'periodic':
+        base += f"_pf{int(params['periodic_freq'])}"
+    elif strategy == 'event_driven':
+        base += (
+            f"_edf{int(params['event_driven_freq'])}"
+            f"_cf{int(params['controller_freq'])}"
+            f"_tc{params['threshold_confidence']}"
+        )
+    elif strategy == 'hybrid':
+        base += (
+            f"_edf{int(params['event_driven_freq'])}"
+            f"_cf{int(params['controller_freq'])}"
+            f"_pf{int(params['periodic_freq'])}"
+            f"_tc{params['threshold_confidence']}"
+        )
+
+    return base
 
 
 def _build_run_name(params):
-    """Bestandsnaam op basis van alle parameters inclusief seed."""
     return _build_config_name(params) + f"_seed{params['seed']}"
 
 
-def _save_results(df, params, controller_summary, output_dir):
-    """
-    Slaat het DataFrame (parquet) en de metadata (JSON) op in een submap
-    per configuratie. Binnen de submap is de seed de unieke identifier,
-    zodat 100 seeds per configuratie netjes naast elkaar staan.
-
-    Structuur
-    ---------
-    <output_dir>/
-      <config_name>/
-        <config_name>_seed<seed>.parquet
-        <config_name>_seed<seed>.json
-    """
-    config_name = _build_config_name(params)
-    run_name    = _build_run_name(params)
-
-    config_dir  = Path(output_dir) / config_name
+def _ensure_config_dir(params, output_dir) -> Path:
+    """Maak config_dir altijd aan — ook bij deadlock."""
+    config_dir = Path(output_dir) / _build_config_name(params)
     config_dir.mkdir(parents=True, exist_ok=True)
-
-    parquet_path = config_dir / f"{run_name}.parquet"
-    json_path    = config_dir / f"{run_name}.json"
-
-    df.to_parquet(parquet_path, index=False)
-
-    meta = {**params, "controller_summary": controller_summary}
-    with open(json_path, "w") as f:
-        json.dump(meta, f, indent=2)
-
-    print(f"Resultaten opgeslagen:\n  {parquet_path}")
-    return meta
+    return config_dir
 
 
-# =============================================================================
-# Resultaten ophalen
-# =============================================================================
-
-def load_all_runs(results_dir: Path | str = settings.RESULTS_DIR) -> pd.DataFrame:
+def _save_results(df, params, config_dir, deadlock: bool = False) -> None:
     """
-    Laadt alle run-metadata uit de JSON-bestanden in results_dir,
-    inclusief alle configuratie-submappen.
-
-    Elke rij is één run, met alle parameters én controller_summary als kolommen.
-    De kolom 'parquet_path' geeft het pad naar de bijbehorende resultaten.
-
-    Gebruik
-    -------
-        runs = load_all_runs()
-
-        # Filter op specifieke parameters
-        runs[runs["seed"] == 42]
-        runs[(runs["objective_strategy"] == "dynamic") & (runs["n_freight"] == 300)]
-
-        # Gemiddelde over meerdere seeds van dezelfde configuratie
-        runs.groupby(["trigger_strategy", "objective_strategy"])["ctrl_n_rescheduled"].mean()
-
-        # Laad resultaten van een specifieke run
-        df = pd.read_parquet(runs.iloc[0]["parquet_path"])
+    Sla df op als parquet.
+    Normale run:   <run_name>.parquet
+    Deadlock run:  <run_name>_deadlock.parquet
     """
-    records = []
-    # Zoek recursief in alle submappen
-    for json_path in sorted(Path(results_dir).rglob("*.json")):
-        with open(json_path) as f:
-            meta = json.load(f)
-        for key, value in meta.pop("controller_summary", {}).items():
-            meta[f"ctrl_{key}"] = value
-        meta["parquet_path"] = str(json_path.with_suffix(".parquet"))
-        records.append(meta)
-
-    if not records:
-        print(f"Geen runs gevonden in '{results_dir}'.")
-        return pd.DataFrame()
-
-    return pd.DataFrame(records)
+    run_name = _build_run_name(params)
+    suffix   = "_deadlock" if deadlock else ""
+    df.to_parquet(config_dir / f"{run_name}{suffix}.parquet", index=False)
 
 
 # =============================================================================
@@ -213,20 +184,21 @@ def load_all_runs(results_dir: Path | str = settings.RESULTS_DIR) -> pd.DataFram
 
 def run_simulation(
     # Data
-    n_freight:            int   = 300,
+    n_freight:            int   = 182,
 
     # Trigger
-    trigger_strategy:     str   = "hybrid",   # "periodic" | "event_driven" | "hybrid"
-    event_driven_freq:    float = 900,         # min interval tussen solver calls (s)
-    controller_freq:      float = 300,         # evaluatiefrequentie trigger (s); <= event_driven_freq
-    periodic_freq:        float = 1800,        # interval periodic / harde deadline hybrid (s)
-    threshold_confidence: float = 0.6,         # MC: P(delay > drempel) om solver te vuren
+    trigger_strategy:     str   = "hybrid",
+    event_driven_freq:    float = 900,
+    controller_freq:      float = 300,
+    periodic_freq:        float = 1800,
+    threshold_confidence: float = 0.6,
+    mc_delay_per_train:   float = settings.MC_DELAY_PER_TRAIN,
 
     # MIP
-    objective_strategy:   str   = "static",   # "static" | "dynamic" | "timetable_deviation"
-    weight_passenger:     int   = 2,
+    objective_strategy:   str   = "static",
+    weight_passenger:     int   = 1,
     weight_freight:       int   = 1,
-    dynamic_threshold:    float = 300,         # γ: drempel voor dynamic priority upgrade (s)
+    dynamic_threshold:    float = 180,
 
     # Reproduceerbaarheid
     seed:                 int   = settings.SIMULATION_SEED,
@@ -238,16 +210,15 @@ def run_simulation(
     """
     Voert de volledige simulatiepipeline uit vanuit de gold-bestanden.
 
-    De seed wordt gebruikt voor:
-      - Rijtijdsampling in de simulator (sample_duration)
-      - Monte Carlo rollouts in de trigger (child-RNGs afgeleid van trigger_rng)
-
     Returns
     -------
-    (state, df, meta)
-        state : SystemState  — eindtoestand van de simulatie
-        df    : pd.DataFrame — resultaten per (train_id, segment_id)
-        meta  : dict         — parameters + controller summary
+    (state, df, meta, config_dir)
+        state      : SystemState  — eindtoestand (of toestand op deadlock-moment)
+        df         : pd.DataFrame — resultaten per (train_id, segment_id)
+                                    partieel bij deadlock
+        meta       : dict         — parameters + controller summary +
+                                    deadlock_detected (bool)
+        config_dir : Path         — pad naar configuratiemap (altijd gevuld)
     """
     params = dict(
         n_freight            = n_freight,
@@ -263,14 +234,15 @@ def run_simulation(
         seed                 = seed,
     )
 
+    # config_dir altijd aanmaken — ook als de run later deadlockt
+    config_dir = _ensure_config_dir(params, output_dir)
+
     # 1. Data laden
-    print("Data laden...")
+    print("Loading data...")
     trains, segments, timetable = load_all(n_freight)
 
     # 2. Trigger bouwen
-    # Aparte RNG voor de trigger zodat simulator- en trigger-streams
-    # onafhankelijk zijn maar beide volledig reproduceerbaar via seed.
-    print(f"Controller bouwen (trigger={trigger_strategy}, objective={objective_strategy})...")
+    print(f"Building controller (trigger={trigger_strategy}, objective={objective_strategy})...")
     trigger = _build_trigger(
         trigger_strategy     = trigger_strategy,
         trains               = trains,
@@ -280,6 +252,7 @@ def run_simulation(
         controller_freq      = controller_freq,
         periodic_freq        = periodic_freq,
         threshold_confidence = threshold_confidence,
+        mc_delay_per_train   = mc_delay_per_train,
         rng                  = np.random.default_rng(seed),
     )
 
@@ -296,27 +269,42 @@ def run_simulation(
     )
 
     # 4. Simulatie uitvoeren
-    print("Simulatie starten...")
-    state = Simulator(
+    print("Running simulation...")
+    simulator = Simulator(
         trains     = trains,
         segments   = segments,
         timetable  = timetable,
         controller = controller,
         seed       = seed,
-    ).run()
+    )
+
+    deadlock_detected = False
+    try:
+        state = simulator.run()
+    except DeadlockDetected as e:
+        print(f"[DEADLOCK] {e}")
+        state = simulator._state
+        deadlock_detected = True
 
     # 5. Resultaten verwerken
-    print("Resultaten verwerken...")
+    print("Processing results...")
     df                 = results_to_dataframe(state, trains, timetable)
     controller_summary = controller.summary()
+    meta               = {
+        **params,
+        "controller_summary": controller_summary,
+        "deadlock_detected":  deadlock_detected,
+    }
 
     # 6. Opslaan
     if save:
-        meta = _save_results(df, params, controller_summary, output_dir)
-    else:
-        meta = {**params, "controller_summary": controller_summary}
+        _save_results(df, params, config_dir, deadlock=deadlock_detected)
+        run_name = _build_run_name(params)
+        suffix   = "_deadlock" if deadlock_detected else ""
+        print(f"Saved: {config_dir / run_name}{suffix}.parquet")
 
-    print(f"Klaar. {len(df)} rijen, {df['train_id'].nunique()} treinen.")
+    status = "DEADLOCK" if deadlock_detected else "Done"
+    print(f"{status}. {len(df)} rows, {df['train_id'].nunique()} trains.")
     print(f"Controller: {controller_summary}")
 
-    return state, df, meta
+    return state, df, meta, config_dir
