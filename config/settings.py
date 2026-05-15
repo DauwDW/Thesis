@@ -4,20 +4,20 @@ from pathlib import Path
 # Paden — pas aan naar jouw lokale situatie
 # =============================================================================
 # Dauw:
-RESULTS_DIR       = Path("/Users/ddw/Desktop/Rescheduling/results")
-DISTRIBUTIONS_DIR = Path("/Users/ddw/Desktop/Rescheduling/data/distributions")
-RAW_DATA_DIR      = Path("/Users/ddw/Desktop/Rescheduling/data/raw")
-BRONZE_DIR        = Path("/Users/ddw/Desktop/Rescheduling/data/bronze")
-SILVER_DIR        = Path("/Users/ddw/Desktop/Rescheduling/data/silver")
-GOLD_DIR          = Path("/Users/ddw/Desktop/Rescheduling/data/gold")
+#RESULTS_DIR       = Path("/Users/ddw/Desktop/Rescheduling/results")
+#DISTRIBUTIONS_DIR = Path("/Users/ddw/Desktop/Rescheduling/data/distributions")
+#RAW_DATA_DIR      = Path("/Users/ddw/Desktop/Rescheduling/data/raw")
+#BRONZE_DIR        = Path("/Users/ddw/Desktop/Rescheduling/data/bronze")
+#SILVER_DIR        = Path("/Users/ddw/Desktop/Rescheduling/data/silver")
+#GOLD_DIR          = Path("/Users/ddw/Desktop/Rescheduling/data/gold")
 
 # Alice:
-# RESULTS_DIR       = Path("")
-# DISTRIBUTIONS_DIR = Path("")
-# RAW_DATA_DIR      = Path("")
-# BRONZE_DIR        = Path("")
-# SILVER_DIR        = Path("")
-# GOLD_DIR          = Path("")
+RESULTS_DIR       = Path("C:\\Users\\Allice\\Thesis\\results")
+DISTRIBUTIONS_DIR = Path("C:\\Users\\Allice\\Thesis\\data\\distributions")
+RAW_DATA_DIR      = Path("C:\\Users\\Allice\\Thesis\\data\\raw")
+BRONZE_DIR        = Path("C:\\Users\\Allice\\Thesis\\data\\bronze")
+SILVER_DIR        = Path("C:\\Users\\Allice\\Thesis\\data\\silver")
+GOLD_DIR          = Path("C:\\Users\\Allice\\Thesis\\data\\gold")
 
 # =============================================================================
 # Simulatie
