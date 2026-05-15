@@ -16,32 +16,39 @@ segment vrij komt). Rijtijden worden gesampeld via sample_duration()
 uit simulation/simulator.py — inclusief timetable-fallback voor segmenten
 zonder empirische data.
 
-Performance threshold
----------------------
-De drempel wordt uitgedrukt als gemiddelde vertraging per actieve trein:
+Performance threshold (geheugenloos)
+------------------------------------
+Op elk evaluatiemoment wordt de drempel dynamisch berekend uit de huidige
+toestand:
 
-    performance_threshold = avg_delay_at_last_reschedule + MC_DELAY_PER_TRAIN
+    threshold = avg_delay_per_active_train(state) + MC_DELAY_PER_TRAIN
 
-waarbij avg_delay_at_last_reschedule de gemiddelde vertraging per actieve trein
-was op het moment van de eerste evaluatie na de laatste reschedule.
+De rollout retourneert de gemiddelde geprojecteerde eindvertraging per
+actieve trein. De vergelijking
 
-De rollout geeft eveneens een gemiddelde vertraging per trein terug, zodat
-threshold en rollout op dezelfde schaal staan en de vergelijking
     rollout > threshold
-betekent: "de verwachte gemiddelde vertraging per trein is significant slechter
-dan op het moment van de laatste ingreep."
 
-Door te werken met gemiddelden i.p.v. absolute sommen is de threshold robuust
-tegen wisselende treinpopulaties: treinen die finishen of nieuw opstarten
-beïnvloeden de threshold niet.
+betekent dus equivalent:
 
-De threshold wordt gereset na elke reschedule en opnieuw bepaald bij de
-eerste evaluatie erna.
+    rollout - avg_delay_now > MC_DELAY_PER_TRAIN
+
+ofwel: "verwachten we meer dan MC_DELAY_PER_TRAIN seconden EXTRA vertraging
+per trein bovenop wat al gerealiseerd is?"
+
+Eigenschappen
+- Geheugenloos: geen state-tracking over reschedules heen; de drempel
+  past zich automatisch aan de huidige toestand aan.
+- Geen ratchet: een succesvolle reschedule verlaagt de geprojecteerde
+  eindvertraging → volgende evaluaties zien een kleinere (rollout - avg_delay)
+  en triggeren niet onnodig.
+- Populatie-robuust: zowel rollout als drempel middelen per trein, dus
+  in- en uitstromende treinen verstoren de vergelijking niet.
 
 Verantwoordelijkheid caller (controller.py)
 -------------------------------------------
-Na een effectieve reschedule moet notify_rescheduled() aangeroepen worden.
-notify_evaluated() wordt intern beheerd door de trigger zelf — de caller
+Na een effectieve reschedule moet notify_rescheduled(current_time, state)
+aangeroepen worden om de frequentieklokken bij te werken. notify_evaluated()
+wordt intern beheerd door elke subklasse in should_reschedule() — de caller
 hoeft dit niet aan te roepen.
 """
 
@@ -69,11 +76,11 @@ logger = logging.getLogger(__name__)
 
 class BaseTrigger:
     """
-    Abstracte basisklasse voor alle triggerstrategie.
+    Abstracte basisklasse voor alle triggerstrategieën.
 
     Verantwoordelijkheid caller
     ---------------------------
-    - notify_rescheduled(current_time) aanroepen na elke effectieve reschedule.
+    - notify_rescheduled(current_time, state) aanroepen na elke effectieve reschedule.
     - notify_evaluated() wordt intern beheerd door elke subklasse in
       should_reschedule() — de caller hoeft dit niet aan te roepen.
     """
@@ -81,8 +88,14 @@ class BaseTrigger:
     def __init__(self):
         self._last_reschedule_time = None
         self._last_evaluation_time = None
+        self._n_evaluated = 0
 
-    def notify_rescheduled(self, current_time: float):
+    @property
+    def n_evaluated(self) -> int:
+        """Aantal keren dat de MC effectief gedraaid heeft (beide frequentiechecks gepasseerd)."""
+        return self._n_evaluated
+
+    def notify_rescheduled(self, current_time: float, state):
         self._last_reschedule_time = current_time
         self._last_evaluation_time = current_time
 
@@ -128,18 +141,24 @@ class PeriodicTrigger(BaseTrigger):
 
 class EventDrivenTrigger(BaseTrigger):
     """
+    Event-driven trigger met dynamisch berekende drempel.
+
+    Op elk evaluatiemoment:
+        threshold = avg_delay_per_active_train(state) + mc_delay_per_train
+        confidence = fractie rollouts met projected_avg_final_delay > threshold
+
+    De solver wordt opgeroepen als confidence >= threshold_confidence.
+
     Parameters
     ----------
     trains               : dict[int, Train]
     segments             : dict[str, Segment]
     timetable            : Timetable
-    event_driven_freq    : float       — min seconden tussen twee solver-aanroepen
-    controller_freq      : float       — min seconden tussen twee evaluaties (<= event_driven_freq)
-    threshold_confidence : float       — fractie rollouts boven drempel om solver te vuren
-    mc_iterations        : int         — aantal rollouts per evaluatie
-    mc_delay_per_train   : float       — toegestane extra gemiddelde vertraging per trein (s)
-    performance_threshold: float|None  — drempelwaarde (gem. delay/trein); None = lazy init
-                                         bij eerste evaluatie na reschedule
+    event_driven_freq    : float  — min seconden tussen twee solver-aanroepen
+    controller_freq      : float  — min seconden tussen twee evaluaties (<= event_driven_freq)
+    threshold_confidence : float  — fractie rollouts boven drempel om solver te vuren
+    mc_iterations        : int    — aantal rollouts per evaluatie
+    mc_delay_per_train   : float  — toegestane extra gemiddelde vertraging per trein (s)
     rng                  : np.random.Generator | None
     """
 
@@ -148,12 +167,11 @@ class EventDrivenTrigger(BaseTrigger):
         trains,
         segments,
         timetable,
-        event_driven_freq:     float,
-        controller_freq:       float,
-        threshold_confidence:  float = THRESHOLD_CONFIDENCE,
-        mc_iterations:         int   = MC_ITERATIONS,
-        mc_delay_per_train:    float = MC_DELAY_PER_TRAIN,
-        performance_threshold: float | None = None,
+        event_driven_freq:    float,
+        controller_freq:      float,
+        threshold_confidence: float = THRESHOLD_CONFIDENCE,
+        mc_iterations:        int   = MC_ITERATIONS,
+        mc_delay_per_train:   float = MC_DELAY_PER_TRAIN,
         rng: np.random.Generator | None = None,
     ):
         super().__init__()
@@ -162,23 +180,21 @@ class EventDrivenTrigger(BaseTrigger):
         self._segments  = segments
         self._timetable = timetable
 
-        self.event_driven_freq     = event_driven_freq
-        self.controller_freq       = controller_freq
-        self.threshold_confidence  = threshold_confidence
-        self.mc_iterations         = mc_iterations
-        self.mc_delay_per_train    = mc_delay_per_train
-        self.performance_threshold = performance_threshold
+        self.event_driven_freq    = event_driven_freq
+        self.controller_freq      = controller_freq
+        self.threshold_confidence = threshold_confidence
+        self.mc_iterations        = mc_iterations
+        self.mc_delay_per_train   = mc_delay_per_train
         self._rng = rng if rng is not None else np.random.default_rng(SIMULATION_SEED)
-
-    def notify_rescheduled(self, current_time: float):
-        super().notify_rescheduled(current_time)
-        self.performance_threshold = None
 
     def should_reschedule(self, state, current_time: float) -> bool:
         if self._time_since_reschedule(current_time) < self.event_driven_freq:
             return False
         if self._time_since_evaluation(current_time) < self.controller_freq:
             return False
+
+        self._n_evaluated += 1  # beide frequentiechecks gepasseerd: MC draait effectief
+
         result = self._estimate_confidence(state, current_time) >= self.threshold_confidence
         self.notify_evaluated(current_time)
         return result
@@ -188,30 +204,33 @@ class EventDrivenTrigger(BaseTrigger):
     # ------------------------------------------------------------------
 
     def _estimate_confidence(self, state, current_time: float) -> float:
-        n_active = len(state.active_train_ids())
+        """
+        Schat de fractie rollouts die de dynamische drempel overschrijden.
 
-        if self.performance_threshold is None:
-            avg_delay = self._avg_delay_per_train(state)
-            self.performance_threshold = avg_delay + self.mc_delay_per_train
-            logger.debug(
-                f"MC threshold initialiseerd op: {self.performance_threshold:.1f}s/trein "
-                f"(avg_delay={avg_delay:.1f}s, "
-                f"per_train_margin={self.mc_delay_per_train}s, "
-                f"n_active={n_active})"
-            )
+        De drempel wordt elke evaluatie opnieuw berekend uit de huidige
+        toestand. Vergelijking is equivalent met:
+
+            rollout - avg_delay_now > mc_delay_per_train
+        """
+        avg_delay = self._avg_delay_per_train(state)
+        threshold = avg_delay + self.mc_delay_per_train
 
         worse = sum(
-            1 for i in range(self.mc_iterations)
+            1 for _ in range(self.mc_iterations)
             if self._run_mc_rollout(
                 state,
                 current_time,
                 rng=np.random.default_rng(self._rng.integers(2**32)),
-            ) > self.performance_threshold
+            ) > threshold
         )
         confidence = worse / self.mc_iterations
+
+        n_active = len(state.active_train_ids())
         logger.debug(
-            f"MC: {worse}/{self.mc_iterations} boven drempel "
-            f"({self.performance_threshold:.1f}s/trein) -> confidence={confidence:.2f}"
+            f"[t={current_time:.0f}] threshold={threshold:.1f}s/trein "
+            f"(avg_delay={avg_delay:.1f}s, margin={self.mc_delay_per_train}s) "
+            f"| fraction_above={confidence:.2f} / required={self.threshold_confidence} "
+            f"| n_active={n_active}"
         )
         return confidence
 
@@ -257,8 +276,6 @@ class EventDrivenTrigger(BaseTrigger):
 
                 elapsed = current_time - entry_time
 
-                # sample_duration heeft altijd een geldige returnwaarde —
-                # fallback via timetable ingebakken.
                 full_dur = sample_duration(
                     train      = train,
                     segment    = self._segments[current_seg],
@@ -275,6 +292,12 @@ class EventDrivenTrigger(BaseTrigger):
 
             else:
                 start[train_id] = self._last_exit(state, train, current_time)
+
+        # --- Sorteer op geprojecteerde starttijd (FCFS-volgorde) ---
+        active_ids = sorted(
+            active_ids,
+            key=lambda tid: start.get(tid, float('inf'))
+        )
 
         # --- Hoofdlus: simuleer elk volgend segment ---
         total_delay = 0.0
@@ -305,7 +328,6 @@ class EventDrivenTrigger(BaseTrigger):
                 # FCFS: wacht tot segment vrij is
                 t = max(t, seg_free_at.get(seg_id, 0.0))
 
-                # sample_duration: altijd geldig, timetable-fallback ingebakken
                 duration = sample_duration(
                     train      = train,
                     segment    = segment,
@@ -377,6 +399,10 @@ class HybridTrigger(BaseTrigger):
     """
     Event-driven met periodieke harde deadline.
     periodic_freq = maximale tijd tussen twee solver-aanroepen (moet > event_driven_freq).
+
+    n_evaluated delegeert naar de inner EventDrivenTrigger — periodieke
+    deadline-aanroepen (waarbij de MC overgeslagen wordt) tellen niet mee
+    in de reschedule rate.
     """
 
     def __init__(
@@ -384,13 +410,12 @@ class HybridTrigger(BaseTrigger):
         trains,
         segments,
         timetable,
-        event_driven_freq:     float,
-        controller_freq:       float,
-        periodic_freq:         float,
-        threshold_confidence:  float = THRESHOLD_CONFIDENCE,
-        mc_iterations:         int   = MC_ITERATIONS,
-        mc_delay_per_train:    float = MC_DELAY_PER_TRAIN,
-        performance_threshold: float | None = None,
+        event_driven_freq:    float,
+        controller_freq:      float,
+        periodic_freq:        float,
+        threshold_confidence: float = THRESHOLD_CONFIDENCE,
+        mc_iterations:        int   = MC_ITERATIONS,
+        mc_delay_per_train:   float = MC_DELAY_PER_TRAIN,
         rng: np.random.Generator | None = None,
     ):
         super().__init__()
@@ -399,21 +424,25 @@ class HybridTrigger(BaseTrigger):
 
         self.periodic_freq  = periodic_freq
         self._event_trigger = EventDrivenTrigger(
-            trains                = trains,
-            segments              = segments,
-            timetable             = timetable,
-            event_driven_freq     = event_driven_freq,
-            controller_freq       = controller_freq,
-            threshold_confidence  = threshold_confidence,
-            mc_iterations         = mc_iterations,
-            mc_delay_per_train    = mc_delay_per_train,
-            performance_threshold = performance_threshold,
-            rng                   = rng,
+            trains               = trains,
+            segments             = segments,
+            timetable            = timetable,
+            event_driven_freq    = event_driven_freq,
+            controller_freq      = controller_freq,
+            threshold_confidence = threshold_confidence,
+            mc_iterations        = mc_iterations,
+            mc_delay_per_train   = mc_delay_per_train,
+            rng                  = rng,
         )
 
-    def notify_rescheduled(self, current_time: float):
-        super().notify_rescheduled(current_time)
-        self._event_trigger.notify_rescheduled(current_time)
+    @property
+    def n_evaluated(self) -> int:
+        """Delegeert naar inner trigger — periodieke deadline-aanroepen tellen niet mee."""
+        return self._event_trigger._n_evaluated
+
+    def notify_rescheduled(self, current_time: float, state):
+        super().notify_rescheduled(current_time, state)
+        self._event_trigger.notify_rescheduled(current_time, state)
 
     def notify_evaluated(self, current_time: float):
         super().notify_evaluated(current_time)

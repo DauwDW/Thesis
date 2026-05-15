@@ -279,9 +279,12 @@ def build_instance(
     psl     = {}
 
     for train in relevant:
+        current_delay = state.current_delay(train.id)
+
         if train.train_type == TrainType.PASSENGER:
-            weights[train.id] = weight_passenger
-            psl[train.id]     = PSL_PASSENGER
+            upgrade           = 1 if current_delay >= gamma else 0
+            weights[train.id] = weight_passenger + upgrade
+            psl[train.id]     = PSL_PASSENGER + upgrade
         else:
             weights[train.id] = weight_freight
             psl[train.id]     = PSL_FREIGHT

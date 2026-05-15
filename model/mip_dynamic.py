@@ -3,27 +3,26 @@ mip_dynamic.py
 
 Dynamic priority MIP model for train rescheduling.
 
-Extends mip_base with dynamic priority levels (PDL) via binary upgrade variables.
+Replaces the endogenous PDL upgrade mechanism (C7/C8) with exogenous weights
+computed in instance.py before the solve. Trains whose current measured delay
+exceeds gamma receive an upgraded weight (passenger: 3, freight: 1) via the
+`weights` dict — no binary pdl variables or linearisation constraints needed.
 
-Effective delay weights (see MIP_Model_Dynamic.docx, Table 1):
-  psl=0, pdl=0  →  weight 1   (freight, on-time)
-  psl=0, pdl=1  →  weight 2   (freight, heavily delayed)
-  psl=1, pdl=0  →  weight 2   (passenger, on-time)
-  psl=1, pdl=1  →  weight 3   (passenger, heavily delayed)
-
-The objective (1 + psl[t]) * delay[t, s_last] + q[t] produces these weights
-because when pdl[t]=1, C8 forces q[t] = delay[t, s_last], adding an extra
-delta on top of the base weight. This is correct by design.
+Effective delay weights (set in instance.py STEP 6):
+  passenger, current_delay <  gamma  →  weight 2   (WEIGHT_PASSENGER)
+  passenger, current_delay >= gamma  →  weight 3   (WEIGHT_PASSENGER + upgrade)
+  freight,   any delay               →  weight 1   (WEIGHT_FREIGHT)
 
 Differences from mip_base
 --------------------------
 - Headway H in C4 (mip_base uses H=0 implicitly)
-- Dynamic priority: pdl binary variable, q linearization variable
-- C7: PDL upgrade constraints based on gamma threshold
-- C8: Linearization of q[t] = pdl[t] * delay[t, s_last]
+- Dynamic weights are pre-computed exogenously in instance.py; this model
+  is structurally identical to mip_base but accepts the extended interface
+  of solver.py (Tp, Tf, H, h_stop, psl, gamma, epsilon, delta_max).
 
-Note: Tp and Tf are accepted for interface consistency with instance.py
-but are not used — weighting is handled via psl.
+Note: Tp, Tf, H, h_stop, psl, gamma, epsilon, delta_max are accepted for
+interface compatibility but are not used — weighting is fully handled via
+the `weights` dict passed through instance["weights"].
 """
 
 import gurobipy as gp
@@ -39,20 +38,22 @@ def build_and_solve_model(
     Sl,
     path,
     sched_entry,
-    sched_exit,
-    runtime,
-    dwell,
-    H,
-    conflicts,
-    occupied,
-    fixed_entry,
-    psl,
-    gamma,
-    epsilon,
-    delta_max,
+    sched_dep,        # solver.py: sched_dep    = instance["sched_exit"]
+    RT,               # solver.py: RT           = instance["runtime"]
+    DW,               # solver.py: DW           = instance["dwell"]
+    H,                # accepted, not used (H=0 always)
+    h_stop,           # accepted, not used
+    psl,              # accepted, not used (weights already upgraded in instance.py)
+    gamma,            # accepted, not used
+    epsilon,          # accepted, not used
+    delta_max,        # accepted, not used
     L,
-    current_time,
+    C,                # solver.py: C            = instance["conflicts"]
+    in_execution,     # solver.py: in_execution = instance["occupied"]
+    fix_arrival,      # solver.py: fix_arrival  = instance["fixed_entry"]
+    weights,          # exogenous weights — upgraded by instance.py based on current delay
     time_limit=None,
+    current_time=None,
     verbose=True,
 ):
     model = gp.Model("rail_rescheduling_dynamic")
@@ -81,14 +82,14 @@ def build_and_solve_model(
     # =========================================================================
 
     entry = {}
-    exit  = {}
+    exit_ = {}
     delay = {}
 
     for t, s in TS:
 
         # --- entry ---
-        if (t, s) in fixed_entry:
-            fixed = fixed_entry[(t, s)]
+        if (t, s) in fix_arrival:
+            fixed = fix_arrival[(t, s)]
             entry[t, s] = model.addVar(
                 lb=fixed, ub=fixed,
                 vtype=GRB.CONTINUOUS,
@@ -103,7 +104,7 @@ def build_and_solve_model(
             )
 
         # --- exit ---
-        exit[t, s] = model.addVar(
+        exit_[t, s] = model.addVar(
             lb=0,
             vtype=GRB.CONTINUOUS,
             name=f"exit[{t},{s}]",
@@ -116,19 +117,16 @@ def build_and_solve_model(
             name=f"delay[{t},{s}]",
         )
 
-    y_index = [(i, j, s) for s in S for (i, j) in conflicts[s]]
-
-    y   = model.addVars(y_index, vtype=GRB.BINARY,     name="y")
-    pdl = model.addVars(T,       vtype=GRB.BINARY,     name="pdl")
-    q   = model.addVars(T,       vtype=GRB.CONTINUOUS, lb=0, name="q")
+    y_index = [(i, j, s) for s in S for (i, j) in C[s]]
+    y = model.addVars(y_index, vtype=GRB.BINARY, name="y")
 
     # =========================================================================
-    # Objective
+    # Objective — exogenous weights, no pdl/q needed
     # =========================================================================
 
     model.setObjective(
         gp.quicksum(
-            (1 + psl[t]) * delay[t, final_segment[t]] + q[t]
+            weights[t] * delay[t, final_segment[t]]
             for t in T
         ),
         GRB.MINIMIZE,
@@ -140,15 +138,15 @@ def build_and_solve_model(
 
     for t in T:
         for s in path[t]:
-            if (t, s) in occupied:
-                duration = occupied[(t, s)]
+            if (t, s) in in_execution:
+                duration = in_execution[(t, s)]
             elif s in Sl:
-                duration = runtime[(t, s)]
+                duration = RT[(t, s)]
             else:
-                duration = dwell[(t, s)]
+                duration = DW[(t, s)]
 
             model.addConstr(
-                exit[t, s] >= entry[t, s] + duration,
+                exit_[t, s] >= entry[t, s] + duration,
                 name=f"C1_occupation[{t},{s}]",
             )
 
@@ -158,7 +156,7 @@ def build_and_solve_model(
 
     for t, s, s_next in consecutive:
         model.addConstr(
-            entry[t, s_next] >= exit[t, s],
+            entry[t, s_next] >= exit_[t, s],
             name=f"C2_continuity[{t},{s},{s_next}]",
         )
 
@@ -174,63 +172,19 @@ def build_and_solve_model(
             )
 
     # =========================================================================
-    # C4 — Conflicts with headway
+    # C4 — Conflicts (H=0, geen headway)
     # =========================================================================
 
     for s in S:
-        for i, j in conflicts[s]:
+        for i, j in C[s]:
             model.addConstr(
-                entry[j, s] >= exit[i, s] + H[(i, j, s)] - L * (1 - y[i, j, s]),
+                entry[j, s] >= exit_[i, s] - L * (1 - y[i, j, s]),
                 name=f"C4a_conflict[{i},{j},{s}]",
             )
             model.addConstr(
-                entry[i, s] >= exit[j, s] + H[(j, i, s)] - L * y[i, j, s],
+                entry[i, s] >= exit_[j, s] - L * y[i, j, s],
                 name=f"C4b_conflict[{i},{j},{s}]",
             )
-
-    # =========================================================================
-    # C7 — Dynamic priority upgrade threshold
-    # =========================================================================
-
-    for t in T:
-        s_last = final_segment[t]
-
-        # C7a: pdl forced to 1 when delay >= gamma
-        model.addConstr(
-            delay[t, s_last] - gamma <= L * pdl[t],
-            name=f"C7a_upgrade_force[{t}]",
-        )
-
-        # C7b: pdl forced to 0 when delay < gamma
-        model.addConstr(
-            delay[t, s_last] - gamma >= epsilon - L * (1 - pdl[t]),
-            name=f"C7b_upgrade_block[{t}]",
-        )
-
-    # =========================================================================
-    # C8 — Linearisation of q[t] = pdl[t] * delay[t, s_last]
-    # =========================================================================
-
-    for t in T:
-        s_last = final_segment[t]
-
-        # C8a: q[t] = 0 when pdl[t] = 0
-        model.addConstr(
-            q[t] <= delta_max * pdl[t],
-            name=f"C8a_lin_upper_pdl[{t}]",
-        )
-
-        # C8b: q[t] cannot exceed actual final delay
-        model.addConstr(
-            q[t] <= delay[t, s_last],
-            name=f"C8b_lin_upper_delay[{t}]",
-        )
-
-        # C8c: combined with C8b, forces q[t] = delay[t, s_last] when pdl[t] = 1
-        model.addConstr(
-            q[t] >= delay[t, s_last] - delta_max * (1 - pdl[t]),
-            name=f"C8c_lin_lower[{t}]",
-        )
 
     # =========================================================================
     # Solve
@@ -238,4 +192,5 @@ def build_and_solve_model(
 
     model.optimize()
 
-    return model, entry, exit, delay, y, pdl, q, conflicts, final_segment
+    # pdl=None, q=None — parse_solution handles this gracefully
+    return model, entry, exit_, delay, y, None, None, C, final_segment

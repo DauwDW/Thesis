@@ -102,10 +102,12 @@ def _solve_dynamic(instance, time_limit, verbose):
             C            = instance["conflicts"],
             in_execution = instance["occupied"],
             fix_arrival  = instance["fixed_entry"],
+            weights      = instance["weights"],   # exogeen berekend in instance.py
             time_limit   = time_limit,
             current_time = instance["current_time"],
             verbose      = verbose,
         )
+        # pdl=None, q=None — parse_solution handles this gracefully
         return parse_solution(model, a, d, delta, y, C, pdl=pdl, q=q)
 
     except Exception as e:

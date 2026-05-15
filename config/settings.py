@@ -56,6 +56,6 @@ CONFLICT_WINDOW      = 600
 # =============================================================================
 # Monte Carlo trigger
 # =============================================================================
-MC_DELAY_PER_TRAIN = 40
+MC_DELAY_PER_TRAIN = 180
 MC_ITERATIONS        = 5
 THRESHOLD_CONFIDENCE = 0.6
