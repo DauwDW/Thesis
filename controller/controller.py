@@ -121,6 +121,7 @@ class Controller:
         objective_strategy,
         weight_passenger,
         weight_freight,
+        upgrade_weight,
         gamma,
     ) -> None:
 
@@ -133,6 +134,7 @@ class Controller:
 
         self.weight_passenger = weight_passenger
         self.weight_freight = weight_freight
+        self.upgrade_weight = upgrade_weight
         self.gamma = gamma
 
         self._solver_runtimes: list[float] = []
@@ -175,8 +177,10 @@ class Controller:
             trains=self.trains,
             segments=self.segments,
             current_time=current_time,
+            priority_strategy=self.objective_strategy,
             weight_passenger=self.weight_passenger,
             weight_freight=self.weight_freight,
+            upgrade_weight=self.upgrade_weight,
             gamma=self.gamma,
         )
 

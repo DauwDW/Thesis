@@ -135,7 +135,10 @@ def _build_config_name(params):
     )
 
     if objective == 'dynamic':
-        base += f"_g{int(params['dynamic_threshold'])}"
+        base += (
+            f"_g{int(params['dynamic_threshold'])}"
+            f"_uw{int(params['upgrade_weight'])}"
+        )
 
     if strategy == 'periodic':
         base += f"_pf{int(params['periodic_freq'])}"
@@ -144,7 +147,7 @@ def _build_config_name(params):
             f"_edf{int(params['event_driven_freq'])}"
             f"_cf{int(params['controller_freq'])}"
             f"_tc{params['threshold_confidence']}"
-            f"_mc{int(params['mc_delay_per_train'])}"   
+            f"_mc{int(params['mc_delay_per_train'])}"
         )
     elif strategy == 'hybrid':
         base += (
@@ -152,7 +155,7 @@ def _build_config_name(params):
             f"_cf{int(params['controller_freq'])}"
             f"_pf{int(params['periodic_freq'])}"
             f"_tc{params['threshold_confidence']}"
-            f"_mc{int(params['mc_delay_per_train'])}" 
+            f"_mc{int(params['mc_delay_per_train'])}"
         )
 
     return base
@@ -200,6 +203,7 @@ def run_simulation(
     objective_strategy:   str   = "static",
     weight_passenger:     int   = 1,
     weight_freight:       int   = 1,
+    upgrade_weight:       int   = 10,
     dynamic_threshold:    float = 180,
 
     # Reproduceerbaarheid
@@ -211,6 +215,16 @@ def run_simulation(
 ) -> tuple:
     """
     Voert de volledige simulatiepipeline uit vanuit de gold-bestanden.
+
+    Parameters (priority)
+    ---------------------
+    objective_strategy : "static" | "dynamic"
+        static  → weights[t] = weight_passenger of weight_freight (fixed)
+        dynamic → idem + upgrade_weight als current_delay >= dynamic_threshold
+    weight_passenger   : base weight voor passagierstreinen
+    weight_freight     : base weight voor goederentreinen
+    upgrade_weight     : extra penalty (alleen actief bij dynamic)
+    dynamic_threshold  : gamma — delay-drempel (s) voor upgrade
 
     Returns
     -------
@@ -231,8 +245,9 @@ def run_simulation(
         threshold_confidence = threshold_confidence,
         objective_strategy   = objective_strategy,
         weight_passenger     = weight_passenger,
-        mc_delay_per_train   = mc_delay_per_train,
         weight_freight       = weight_freight,
+        upgrade_weight       = upgrade_weight,
+        mc_delay_per_train   = mc_delay_per_train,
         dynamic_threshold    = dynamic_threshold,
         seed                 = seed,
     )
@@ -268,6 +283,7 @@ def run_simulation(
         objective_strategy = objective_strategy,
         weight_passenger   = weight_passenger,
         weight_freight     = weight_freight,
+        upgrade_weight     = upgrade_weight,
         gamma              = dynamic_threshold,
     )
 

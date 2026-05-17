@@ -1,4 +1,3 @@
-
 """
 instance.py
 
@@ -21,14 +20,17 @@ Lower bound semantics (zie mip_base.py):
     fixed_entry[(t,s)]    → lb = ub = current_time   (actief segment)
     actual_entries[(t,s)] → lb = ub = actual_entry   (al betreden, niet actief)
     overige segmenten     → lb = sched_entry          (geen artificiële delay)
+
+Priority weights (STEP 6):
+    "static"  → weights[t] = weight_passenger of weight_freight (fixed per type)
+    "dynamic" → idem + upgrade_weight bovenop als state.current_delay(t) >= gamma
+                (exogene upgrade op basis van observed delay)
 """
 
 from config.settings import (
     L,
     EPSILON,
     DELTA_MAX,
-    PSL_PASSENGER,
-    PSL_FREIGHT,
     RESCHEDULING_HORIZON,
     CONFLICT_WINDOW,
 )
@@ -75,10 +77,17 @@ def build_instance(
     trains,
     segments,
     current_time,
+    priority_strategy,
     weight_passenger,
     weight_freight,
+    upgrade_weight,
     gamma,
 ):
+    if priority_strategy not in ("static", "dynamic"):
+        raise ValueError(
+            f"Unknown priority_strategy: '{priority_strategy}'. "
+            f"Use 'static' or 'dynamic'."
+        )
 
     horizon_end = current_time + RESCHEDULING_HORIZON
 
@@ -246,7 +255,6 @@ def build_instance(
                 actual_entries[(train.id, seg)] = ae
             except KeyError:
                 pass
-    
 
     # =========================================================================
     # STEP 5 — Conflicts
@@ -273,21 +281,25 @@ def build_instance(
 
     # =========================================================================
     # STEP 6 — Weights
+    #
+    # static:  base label per treintype, geen upgrade
+    # dynamic: base label + upgrade_weight als current_delay >= gamma
     # =========================================================================
 
     weights = {}
-    psl     = {}
+    n_upgraded = 0
 
     for train in relevant:
-        current_delay = state.current_delay(train.id)
-
         if train.train_type == TrainType.PASSENGER:
-            upgrade           = 1 if current_delay >= gamma else 0
-            weights[train.id] = weight_passenger + upgrade
-            psl[train.id]     = PSL_PASSENGER + upgrade
+            base = weight_passenger
         else:
-            weights[train.id] = weight_freight
-            psl[train.id]     = PSL_FREIGHT
+            base = weight_freight
+
+        if priority_strategy == "dynamic" and state.current_delay(train.id) >= gamma:
+            weights[train.id] = base + upgrade_weight
+            n_upgraded += 1
+        else:
+            weights[train.id] = base
 
     # =========================================================================
     # Diagnostiek
@@ -301,6 +313,10 @@ def build_instance(
     print(f"  Top 5 vertraagd: {delays[:5]}")
     print(f"  Gemiddelde delay: {sum(d for _, d in delays) / max(1, len(delays)):.0f}s")
 
+    if priority_strategy == "dynamic":
+        print(f"  Dynamic upgrades (delay >= {gamma}s): "
+              f"{n_upgraded}/{len(relevant)} treinen +{upgrade_weight}")
+
     # Niet-gestarte treinen met sched_entry in verleden
     # Check alle treinen in instance op grote implied delays
     print(f"\n--- Instance diagnostiek t={current_time:.0f}s ---")
@@ -311,7 +327,7 @@ def build_instance(
             continue
         last_seg = remaining_segs[-1]
         se_last = sched_entry.get((t_id, last_seg), 0)
-        
+
         # Wat is de effectieve lb voor het eerste segment?
         first_seg = remaining_segs[0]
         if (t_id, first_seg) in fixed_entry:
@@ -323,13 +339,13 @@ def build_instance(
         else:
             lb_first = sched_entry.get((t_id, first_seg), 0)
             kind = "sched"
-        
+
         implied_delay = max(0, lb_first - se_last)
         if implied_delay > 500:
             print(f"  🔴 trein {t_id}: lb_first={lb_first:.0f}s ({kind}) "
-                f"sched_last={se_last:.0f}s "
-                f"implied_delay>={implied_delay:.0f}s "
-                f"n_segs={len(remaining_segs)}")
+                  f"sched_last={se_last:.0f}s "
+                  f"implied_delay>={implied_delay:.0f}s "
+                  f"n_segs={len(remaining_segs)}")
 
     # =========================================================================
     # RETURN
@@ -352,7 +368,6 @@ def build_instance(
         actual_entries=actual_entries,
         conflicts=conflicts,
         weights=weights,
-        psl=psl,
         L=L,
         epsilon=EPSILON,
         delta_max=DELTA_MAX,

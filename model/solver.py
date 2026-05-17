@@ -1,6 +1,17 @@
-from model.mip_base    import build_and_solve_model as solve_static
-from model.mip_dynamic import build_and_solve_model as solve_dynamic
-from model.solution    import parse_solution, Solution
+"""
+solver.py
+
+Thin wrapper rond het MIP-model. Eén pad voor alle priority strategies —
+de upgrade-logica zit in instance.py STEP 6 (exogene weights). De solver
+hoeft enkel een feasibility check op de instance te doen en de gebouwde
+Gurobi-output naar een Solution-object te vertalen.
+
+Validatie van priority_strategy gebeurt al in build_instance() vóór deze
+functie wordt aangeroepen. De parameter wordt hier nog steeds gevalideerd
+zodat solve() ook standalone correct werkt (bv. vanuit tests).
+"""
+from model.mip_model import build_and_solve_model
+from model.solution  import parse_solution, Solution
 
 _EMPTY_SOLUTION = Solution(
     status    = "unknown",
@@ -32,19 +43,8 @@ def solve(instance, priority_strategy="static", time_limit=60, verbose=False):
             delay     = {},
         )
 
-    if priority_strategy == "static":
-        return _solve_static(instance, time_limit, verbose)
-    else:
-        return _solve_dynamic(instance, time_limit, verbose)
-
-
-# ------------------------------------------------------------------------------
-# Private helpers
-# ------------------------------------------------------------------------------
-
-def _solve_static(instance, time_limit, verbose):
     try:
-        model, entry, dep, delay, y, final_segment = solve_static(
+        model, entry, dep, delay, y, _ = build_and_solve_model(
             T              = instance["T"],
             S              = instance["S"],
             Ss             = instance["Ss"],
@@ -67,49 +67,5 @@ def _solve_static(instance, time_limit, verbose):
         return parse_solution(model, entry, dep, delay, y, instance["conflicts"])
 
     except Exception as e:
-        print(f"[solver] Gurobi error (static): {e}")
-        return _EMPTY_SOLUTION
-
-
-def _solve_dynamic(instance, time_limit, verbose):
-    try:
-        # Reconstrueer H uit conflicts — altijd 0 (geen headway)
-        H = {}
-        for s, pairs in instance["conflicts"].items():
-            for (i, j) in pairs:
-                H[(i, j, s)] = 0
-                H[(j, i, s)] = 0
-
-        model, a, d, delta, y, pdl, q, C, _ = solve_dynamic(
-            T            = instance["T"],
-            Tp           = instance["Tp"],
-            Tf           = instance["Tf"],
-            S            = instance["S"],
-            Ss           = instance["Ss"],
-            Sl           = instance["Sl"],
-            path         = instance["path"],
-            sched_entry  = instance["sched_entry"],
-            sched_dep    = instance["sched_exit"],
-            RT           = instance["runtime"],
-            DW           = instance["dwell"],
-            H            = H,
-            h_stop       = instance.get("h_stop", {}),
-            psl          = instance.get("psl", {}),
-            gamma        = instance.get("gamma", 0),
-            epsilon      = instance.get("epsilon", 0),
-            delta_max    = instance.get("delta_max", 0),
-            L            = instance["L"],
-            C            = instance["conflicts"],
-            in_execution = instance["occupied"],
-            fix_arrival  = instance["fixed_entry"],
-            weights      = instance["weights"],   # exogeen berekend in instance.py
-            time_limit   = time_limit,
-            current_time = instance["current_time"],
-            verbose      = verbose,
-        )
-        # pdl=None, q=None — parse_solution handles this gracefully
-        return parse_solution(model, a, d, delta, y, C, pdl=pdl, q=q)
-
-    except Exception as e:
-        print(f"[solver] Gurobi error (dynamic): {e}")
+        print(f"[solver] Gurobi error: {e}")
         return _EMPTY_SOLUTION

@@ -1,60 +1,60 @@
+"""
+mip_model.py
+
+Single MIP model for train rescheduling.
+
+Priority handling is exogeen: de `weights` dict komt uit instance.py STEP 6
+en is al aangepast op basis van priority_strategy ("static" of "dynamic").
+De solver hoeft geen weet te hebben van strategy — hij minimaliseert simpelweg
+de gewogen som van final-segment delays.
+
+Lower bound semantics voor entry-variabelen:
+
+  1. (t,s) in fixed_entry:
+     lb = ub = current_time
+     Actief segment — trein zit hier NU, entry gefixed.
+
+  2. (t,s) in actual_entries:
+     lb = ub = actual_entry[(t,s)]
+     Segment al betreden, entry ligt in het verleden en kan
+     niet meer aangepast worden — gefixed op werkelijke waarde.
+
+  3. Overige (toekomstige) segmenten:
+     lb = max(current_time, sched_entry[(t,s)])
+     Toekomstige segmenten. Combineert twee garanties:
+       - niet eerder dan gepland (sched_entry)
+       - niet in het verleden (current_time)
+     In de praktijk is de tweede defensief: STEP 1 in instance.py filtert
+     al treinen waarvan de start in het verleden ligt, en C2 continuity
+     duwt entry van vervolgsegmenten automatisch in de toekomst. De guard
+     dekt edge cases af zonder de oplossing voor correcte instances te
+     veranderen.
+"""
 
 import gurobipy as gp
 from gurobipy import GRB
 
 
 def build_and_solve_model(
-
     T,
     S,
     Ss,
     Sl,
-
     path,
-
     sched_entry,
     sched_exit,
-
     runtime,
     dwell,
-
     conflicts,
-
     occupied,
     fixed_entry,
     actual_entries,
-
     weights,
-
     L,
-
     current_time,
-
     time_limit=None,
     verbose=True,
 ):
-    """
-    Static priority MIP model for train rescheduling.
-
-    Lower bound semantics voor entry-variabelen:
-
-      1. (t,s) in fixed_entry:
-         lb = ub = current_time
-         Actief segment — trein zit hier NU, entry gefixed.
-
-      2. (t,s) in actual_entries:
-         lb = ub = actual_entry[(t,s)]
-         Segment al betreden, entry ligt in het verleden en kan
-         niet meer aangepast worden — gefixed op werkelijke waarde.
-
-      3. Overige segmenten:
-         lb = sched_entry[(t,s)]
-         Toekomstige segmenten. De continuity constraint
-         entry[next] >= dep[current] garandeert automatisch dat
-         deze segmenten >= current_time zijn zonder artificiële
-         delay te injecteren.
-    """
-
     model = gp.Model("rail_rescheduling")
 
     if not verbose:
@@ -107,9 +107,10 @@ def build_and_solve_model(
             )
 
         else:
-            # 3. Toekomstig segment — lb = sched_entry
+            # 3. Toekomstig segment — niet eerder dan gepland, niet in verleden
+            lb = max(current_time, sched_entry[(t, s)])
             entry[t, s] = model.addVar(
-                lb=sched_entry[(t, s)],
+                lb=lb,
                 vtype=GRB.CONTINUOUS,
                 name=f"entry[{t},{s}]",
             )

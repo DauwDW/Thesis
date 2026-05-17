@@ -4,20 +4,20 @@ from pathlib import Path
 # Paden — pas aan naar jouw lokale situatie
 # =============================================================================
 # Dauw:
-#RESULTS_DIR       = Path("/Users/ddw/Desktop/Rescheduling/results")
-#DISTRIBUTIONS_DIR = Path("/Users/ddw/Desktop/Rescheduling/data/distributions")
-#RAW_DATA_DIR      = Path("/Users/ddw/Desktop/Rescheduling/data/raw")
-#BRONZE_DIR        = Path("/Users/ddw/Desktop/Rescheduling/data/bronze")
-#SILVER_DIR        = Path("/Users/ddw/Desktop/Rescheduling/data/silver")
-#GOLD_DIR          = Path("/Users/ddw/Desktop/Rescheduling/data/gold")
+RESULTS_DIR       = Path("/Users/ddw/Desktop/Rescheduling/results")
+DISTRIBUTIONS_DIR = Path("/Users/ddw/Desktop/Rescheduling/data/distributions")
+RAW_DATA_DIR      = Path("/Users/ddw/Desktop/Rescheduling/data/raw")
+BRONZE_DIR        = Path("/Users/ddw/Desktop/Rescheduling/data/bronze")
+SILVER_DIR        = Path("/Users/ddw/Desktop/Rescheduling/data/silver")
+GOLD_DIR          = Path("/Users/ddw/Desktop/Rescheduling/data/gold")
 
-# Alice:
-RESULTS_DIR       = Path("C:\\Users\\Allice\\Thesis\\results")
-DISTRIBUTIONS_DIR = Path("C:\\Users\\Allice\\Thesis\\data\\distributions")
-RAW_DATA_DIR      = Path("C:\\Users\\Allice\\Thesis\\data\\raw")
-BRONZE_DIR        = Path("C:\\Users\\Allice\\Thesis\\data\\bronze")
-SILVER_DIR        = Path("C:\\Users\\Allice\\Thesis\\data\\silver")
-GOLD_DIR          = Path("C:\\Users\\Allice\\Thesis\\data\\gold")
+# # Alice:
+# RESULTS_DIR       = Path("C:\\Users\\Allice\\Thesis\\results")
+# DISTRIBUTIONS_DIR = Path("C:\\Users\\Allice\\Thesis\\data\\distributions")
+# RAW_DATA_DIR      = Path("C:\\Users\\Allice\\Thesis\\data\\raw")
+# BRONZE_DIR        = Path("C:\\Users\\Allice\\Thesis\\data\\bronze")
+# SILVER_DIR        = Path("C:\\Users\\Allice\\Thesis\\data\\silver")
+# GOLD_DIR          = Path("C:\\Users\\Allice\\Thesis\\data\\gold")
 
 # =============================================================================
 # Simulatie
@@ -36,11 +36,10 @@ PASSING_DURATION_FREIGHT   = 45  # seconden
 # =============================================================================
 # MIP model
 # =============================================================================
-WEIGHT_PASSENGER = 2
+WEIGHT_PASSENGER = 10
 WEIGHT_FREIGHT   = 1
+UPGRADE_WEIGHT = 10
 
-PSL_PASSENGER = 1
-PSL_FREIGHT   = 0
 
 GAMMA     = 120    # vertragingsdrempel γ (s)
 EPSILON   = 1      # kleine constante ε
