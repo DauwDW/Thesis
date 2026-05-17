@@ -144,6 +144,7 @@ def _build_config_name(params):
             f"_edf{int(params['event_driven_freq'])}"
             f"_cf{int(params['controller_freq'])}"
             f"_tc{params['threshold_confidence']}"
+            f"_mc{int(params['mc_delay_per_train'])}"   
         )
     elif strategy == 'hybrid':
         base += (
@@ -151,6 +152,7 @@ def _build_config_name(params):
             f"_cf{int(params['controller_freq'])}"
             f"_pf{int(params['periodic_freq'])}"
             f"_tc{params['threshold_confidence']}"
+            f"_mc{int(params['mc_delay_per_train'])}" 
         )
 
     return base
@@ -229,6 +231,7 @@ def run_simulation(
         threshold_confidence = threshold_confidence,
         objective_strategy   = objective_strategy,
         weight_passenger     = weight_passenger,
+        mc_delay_per_train   = mc_delay_per_train,
         weight_freight       = weight_freight,
         dynamic_threshold    = dynamic_threshold,
         seed                 = seed,

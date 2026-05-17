@@ -42,7 +42,7 @@ WEIGHT_FREIGHT   = 1
 PSL_PASSENGER = 1
 PSL_FREIGHT   = 0
 
-GAMMA     = 180    # vertragingsdrempel γ (s)
+GAMMA     = 120    # vertragingsdrempel γ (s)
 EPSILON   = 1      # kleine constante ε
 DELTA_MAX = 86400  # maximale vertraging (s)
 L         = 86400  # big-M

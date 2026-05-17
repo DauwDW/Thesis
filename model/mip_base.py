@@ -170,7 +170,7 @@ def build_and_solve_model(
 
     for t, s, s_next in consecutive:
         model.addConstr(
-            entry[t, s_next] >= dep[t, s],
+            entry[t, s_next] == dep[t, s],
             name=f"C2_continuity[{t},{s},{s_next}]",
         )
 
