@@ -46,9 +46,12 @@ def build_and_solve_model(
     time_limit=None,
     verbose=True,
 ):
+    
+    DWELL_SLACK = 3600
     model = gp.Model("rail_rescheduling")
     #Debug
     model.Params.OutputFlag = 0
+    # small_alpha = 1
     model.Params.MIPGap = SOLVER_MIP_GAP
 
 
@@ -127,6 +130,9 @@ def build_and_solve_model(
             weights[t] * delay[t, final_segment[t]]
             for t in T
         ),
+        # + small_alpha * gp.quicksum(
+        #     delay[t, s] for t in T for s in path[t] if s != final_segment[t]
+        # )
         GRB.MINIMIZE,
     )
 
@@ -157,6 +163,26 @@ def build_and_solve_model(
             entry[t, s_next] == dep[t, s],
             name=f"C2_continuity[{t},{s},{s_next}]",
         )
+    
+    # =========================================================================
+    # C2b — Limited early entry for first segment
+    # Treinen mogen max 2 minuten te vroeg het netwerk binnenkomen
+    # =========================================================================
+
+    EARLY_ENTRY_SLACK = 120
+
+    for t in T:
+
+        first_seg = path[t][0]
+
+        # Niet toepassen op reeds actieve segmenten
+        if (t, first_seg) not in fixed_entry:
+
+            model.addConstr(
+                entry[t, first_seg]
+                >= sched_entry[(t, first_seg)] - EARLY_ENTRY_SLACK,
+                name=f"C2b_earlyentry[{t}]",
+            )
 
     # =========================================================================
     # C3 — Delay definition
@@ -190,13 +216,31 @@ def build_and_solve_model(
     # waar hij effectief halteert (geen within-station-passing)
     # =========================================================================
                         # !!!  wnr shit resultaten, zet dit in comment
-    # for t in T:
-    #     for s in path[t]:
-    #         if halts.get((t, s), False):
-    #             model.addConstr(
-    #                 dep[t, s] >= sched_exit[(t, s)],
-    #                 name=f"C5_mindwell[{t},{s}]",
-    #             )
+    for t in T:
+        for s in path[t]:
+            if halts.get((t, s), False):
+                model.addConstr(
+                    dep[t, s] >= sched_exit[(t, s)],
+                    name=f"C5_mindwell[{t},{s}]",
+                )
+    
+    # # =========================================================================
+    # # C6 — Maximum dwell
+    # # Voorkom dat dwell-segmenten als wachtbuffer gebruikt worden
+    # # =========================================================================
+
+    for t in T:
+        for s in path[t]:
+
+            if halts.get((t, s), False):
+
+                planned_dwell = dwell[(t, s)]
+
+                model.addConstr(
+                    dep[t, s] - entry[t, s]
+                    <= planned_dwell + DWELL_SLACK,
+                    name=f"C6_maxdwell[{t},{s}]",
+                )
 
 
     # =========================================================================
