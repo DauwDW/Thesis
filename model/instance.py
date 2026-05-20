@@ -93,17 +93,17 @@ def build_instance(
     relevant = []
 
     for train in trains.values():
-        if state.is_finished(train.id):
+        if state.is_finished(train.id): #Skip trains that have already completed their full route
             continue
         remaining = state.remaining_path(train.id)
         if not remaining:
             continue
-        if has_started(state, train):
+        if has_started(state, train): #trein die al aan het rijden is sws toevoegen
             relevant.append(train)
             continue
-        first_seg  = remaining[0]
+        first_seg  = remaining[0] 
         start_time = timetable.scheduled_entry(train.id, first_seg)
-        if start_time <= horizon_end:
+        if start_time <= horizon_end:# treinen die nog niet begonnen zijn maar hun planned entry wel binnen de horizon ligt
             relevant.append(train)
 
     # =========================================================================
@@ -123,9 +123,9 @@ def build_instance(
     # Enkel segmenten die binnen de rescheduling horizon liggen
 
     path = {}
-    for train in relevant:
+    for train in relevant:# Loop over every train that was selected in STEP 1
         current_delay = state.current_delay(train.id)
-        truncated = []
+        truncated = [] #Initialize an empty list that will hold the segments to include for this train
         for seg in state.remaining_path(train.id):
             mip_entry = state.mip_entry_for(train.id, seg)
             if mip_entry is not None:
@@ -138,9 +138,9 @@ def build_instance(
         path[train.id] = tuple(truncated)
     
 
-    S  = {s for t in T for s in path[t]}
-    Ss = {s for s in S if segments[s].seg_type == SegmentType.STATION}
-    Sl = {s for s in S if segments[s].seg_type == SegmentType.BETWEEN_STATION}
+    S  = sorted({s for t in T for s in path[t]})
+    Ss = sorted({s for s in S if segments[s].seg_type == SegmentType.STATION})
+    Sl = sorted({s for s in S if segments[s].seg_type == SegmentType.BETWEEN_STATION})
 
     # =========================================================================
     # STEP 3 — Timing parameters
