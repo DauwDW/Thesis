@@ -100,8 +100,8 @@ def results_to_dataframe(state, trains, timetable):
                 continue
 
             try:
-                planned_entry = timetable.scheduled_arrival(train_id, seg_id)
-                planned_exit  = timetable.scheduled_departure(train_id, seg_id)
+                planned_entry = timetable.scheduled_entry(train_id, seg_id)
+                planned_exit  = timetable.scheduled_exit(train_id, seg_id)
             except KeyError:
                 planned_entry = None
                 planned_exit  = None

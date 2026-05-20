@@ -38,7 +38,6 @@ class ScheduledTimes:
     exit_seconds:  float
     running_time:  float | None
     dwell_time:    float | None
-    halts:         bool  | None
 
     def __post_init__(self) -> None:
         if self.exit_seconds < self.entry_seconds:
@@ -71,11 +70,11 @@ class Timetable:
     # Opvraging — interface voor instance.py
     # ------------------------------------------------------------------
 
-    def scheduled_arrival(self, train_no: int, segment_id: str) -> float:
+    def scheduled_entry(self, train_no: int, segment_id: str) -> float:
         """A_t,s — geplande aankomsttijd (entry_seconds)."""
         return self._data[(train_no, segment_id)].entry_seconds
 
-    def scheduled_departure(self, train_no: int, segment_id: str) -> float:
+    def scheduled_exit(self, train_no: int, segment_id: str) -> float:
         """D_t,s — geplande vertrektijd (exit_seconds)."""
         return self._data[(train_no, segment_id)].exit_seconds
 
@@ -98,16 +97,6 @@ class Timetable:
                 f"— is dit een lijnsegment?"
             )
         return dw
-
-    def halts_at(self, train_no: int, segment_id: str) -> bool:
-        """h_t,s — True als trein stopt op dit stationssegment."""
-        halts = self._data[(train_no, segment_id)].halts
-        if halts is None:
-            raise ValueError(
-                f"Geen halt indicator voor trein {train_no} op segment '{segment_id}' "
-                f"— is dit een lijnsegment?"
-            )
-        return halts
 
     def get(self, train_no: int, segment_id: str) -> ScheduledTimes:
         """Geeft het volledige ScheduledTimes object terug."""

@@ -193,7 +193,6 @@ def load_timetable(df: pd.DataFrame) -> Timetable:
             exit_seconds  = exit_,
             running_time  = running_time,
             dwell_time    = dwell_time,
-            halts         = halts,
         )
 
     logger.info(

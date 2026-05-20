@@ -52,10 +52,10 @@ class EventQueue:
             item = heapq.heappop(self._heap)
 
             # skip cancelled events
-            if getattr(item.event, "cancelled", False):
+            if item.event.cancelled:       
                 continue
-
-            return item.event
+            else:
+                return item.event
 
         raise IndexError("pop from empty EventQueue")
 
@@ -63,7 +63,7 @@ class EventQueue:
     # Cancel
     # ------------------------------------------------------------------
 
-    def cancel(self, train_id: int, segment_id: str) -> None:
+    def cancel_train_entered(self, train_id: int, segment_id: str) -> None:
         """
         Markeer TrainEntered-events als cancelled.
         """

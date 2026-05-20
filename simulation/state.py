@@ -6,6 +6,8 @@
 #   - Huidige simulatietijd
 #   - Actuele entry/exit tijden per (trein, segment)
 #   - Positie per trein (huidig actief segment)
+#   - Gesamplede bezettingsduren per (trein, segment)
+#   - MIP-geplande entry/exit tijden per (trein, segment)
 #
 # Wordt aangemaakt door de simulatie-engine en doorgegeven aan:
 #   - controller/controller.py  (remaining_path, current_delay, active_train_ids)
@@ -61,6 +63,12 @@ class SystemState:
         Huidig actief segment per trein.
         None als trein nog niet gestart of al klaar is.
 
+    _sampled_durations : dict[tuple[int, str], float]
+        Gesamplede bezettingsduur per (train_id, segment_id).
+
+    _mip_schedule : dict[int, dict[str, tuple[float, float]]]
+        MIP-geplande (entry, exit) tijden per trein en segment.
+
     Gedrag voor treinen die nog niet gestart zijn
     ---------------------------------------------
     remaining_path() geeft het volledige pad terug voor treinen zonder
@@ -84,6 +92,12 @@ class SystemState:
 
         self._current_segment: dict[int, str | None] = {
             train_id: None for train_id in trains
+        }
+
+        self._sampled_durations: dict[tuple[int, str], float] = {}
+
+        self._mip_schedule: dict[int, dict[str, tuple[float, float]]] = {
+            train_id: {} for train_id in trains
         }
 
     # ==========================================================================
@@ -150,6 +164,88 @@ class SystemState:
             self._current_segment[train_id] = None
 
     # ==========================================================================
+    # MIP schedule — aangeroepen door simulator.py via _apply_solution
+    # ==========================================================================
+
+    def clear_mip_schedule(self, train_id: int) -> None:
+        """Wist het volledige MIP-plan voor trein train_id."""
+        self._mip_schedule[train_id] = {}
+
+    def record_mip_schedule(
+        self,
+        train_id: int,
+        segment_id: str,
+        mip_entry: float,
+        mip_exit: float,
+    ) -> None:
+        """
+        Slaat de MIP-geplande entry- en exittijd op voor trein train_id
+        op segment segment_id.
+
+        Parameters
+        ----------
+        train_id   : int   — treinnummer
+        segment_id : str   — segment-id
+        mip_entry  : float — MIP-geplande entrytijd in seconden
+        mip_exit   : float — MIP-geplande exittijd in seconden
+        """
+        self._mip_schedule[train_id][segment_id] = (mip_entry, mip_exit)
+
+    def mip_exit_for(self, train_id: int, segment_id: str) -> float | None:
+        """
+        Geeft de MIP-geplande exittijd voor trein train_id op segment segment_id.
+
+        Returns None als er geen MIP-plan beschikbaar is voor dit segment.
+        """
+        exit_time = self._mip_schedule[train_id].get(segment_id)
+        if exit_time is None:
+            return None
+        return exit_time[1]
+
+    def mip_entry_for(self, train_id: int, segment_id: str) -> float | None:
+        """
+        Geeft de MIP-geplande entrytijd voor trein train_id op segment segment_id.
+
+        Returns None als er geen MIP-plan beschikbaar is voor dit segment.
+        """
+        entry_time = self._mip_schedule[train_id].get(segment_id)
+        if entry_time is None:
+            return None
+        return entry_time[0]
+
+    # ==========================================================================
+    # Gesamplede duren — aangeroepen door simulator.py
+    # ==========================================================================
+
+    def record_sampled_duration(
+        self,
+        train_id: int,
+        segment_id: str,
+        duration: float,
+    ) -> None:
+        """
+        Slaat de gesamplede bezettingsduur op voor trein train_id
+        op segment segment_id.
+        """
+        self._sampled_durations[(train_id, segment_id)] = duration
+
+    def sampled_duration(self, train_id: int, segment_id: str) -> float:
+        """
+        Geeft de gesamplede bezettingsduur terug.
+
+        Raises
+        ------
+        KeyError als nog geen duration geregistreerd werd.
+        """
+        try:
+            return self._sampled_durations[(train_id, segment_id)]
+        except KeyError:
+            raise KeyError(
+                f"Geen sampled_duration voor trein {train_id} "
+                f"op segment '{segment_id}'"
+            )
+
+    # ==========================================================================
     # Public interface — aangeroepen door controller/ en model/
     # ==========================================================================
 
@@ -199,7 +295,7 @@ class SystemState:
         for seg_id in reversed(train.path):
             entry, exit_ = segments.get(seg_id, (None, None))
             if exit_ is not None:
-                planned_exit = self._timetable.scheduled_departure(train_id, seg_id)
+                planned_exit = self._timetable.scheduled_exit(train_id, seg_id)
                 return max(0.0, exit_ - planned_exit)
 
         return 0.0

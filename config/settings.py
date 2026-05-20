@@ -30,15 +30,12 @@ DISPATCHER_POLL_INTERVAL = 10.0
 # =============================================================================
 FREIGHT_RUNNING_TIME_SCALE = 1.3
 
-PASSING_DURATION_PASSENGER = 30  # seconden
-PASSING_DURATION_FREIGHT   = 45  # seconden
+PASSING_DURATION_PASSENGER = 1  # seconden
+PASSING_DURATION_FREIGHT   = 1  # seconden
 
 # =============================================================================
 # MIP model
 # =============================================================================
-WEIGHT_PASSENGER = 10
-WEIGHT_FREIGHT   = 1
-UPGRADE_WEIGHT = 10
 
 
 GAMMA     = 120    # vertragingsdrempel γ (s)
@@ -49,8 +46,8 @@ L         = 86400  # big-M
 SOLVER_TIMEOUT_SECONDS = 60
 SOLVER_MIP_GAP         = 0.01
 
-RESCHEDULING_HORIZON = 1800
-CONFLICT_WINDOW      = 600
+RESCHEDULING_HORIZON = 3600
+CONFLICT_WINDOW = 600   #denk dat dit nergens meer gebruikt wordt
 
 # =============================================================================
 # Monte Carlo trigger

@@ -11,28 +11,18 @@ de gewogen som van final-segment delays.
 Lower bound semantics voor entry-variabelen:
 
   1. (t,s) in fixed_entry:
-     lb = ub = current_time
-     Actief segment — trein zit hier NU, entry gefixed.
+     lb = ub = actual_entry_time
+     Actief segment — entry gefixed op werkelijke entrytijd.
 
-  2. (t,s) in actual_entries:
-     lb = ub = actual_entry[(t,s)]
-     Segment al betreden, entry ligt in het verleden en kan
-     niet meer aangepast worden — gefixed op werkelijke waarde.
-
-  3. Overige (toekomstige) segmenten:
-     lb = max(current_time, sched_entry[(t,s)])
-     Toekomstige segmenten. Combineert twee garanties:
-       - niet eerder dan gepland (sched_entry)
-       - niet in het verleden (current_time)
-     In de praktijk is de tweede defensief: STEP 1 in instance.py filtert
-     al treinen waarvan de start in het verleden ligt, en C2 continuity
-     duwt entry van vervolgsegmenten automatisch in de toekomst. De guard
-     dekt edge cases af zonder de oplossing voor correcte instances te
-     veranderen.
+  2. Overige (toekomstige) segmenten:
+     lb = current_time
+     Toekomstige segmenten mogen niet in het verleden starten.
+     C2 continuity duwt vervolgsegmenten automatisch verder in de toekomst.
 """
 
 import gurobipy as gp
 from gurobipy import GRB
+from config.settings import SOLVER_MIP_GAP
 
 
 def build_and_solve_model(
@@ -48,7 +38,8 @@ def build_and_solve_model(
     conflicts,
     occupied,
     fixed_entry,
-    actual_entries,
+    expected_exit,
+    halts,
     weights,
     L,
     current_time,
@@ -56,6 +47,10 @@ def build_and_solve_model(
     verbose=True,
 ):
     model = gp.Model("rail_rescheduling")
+    #Debug
+    model.Params.OutputFlag = 0
+    model.Params.MIPGap = SOLVER_MIP_GAP
+
 
     if not verbose:
         model.Params.OutputFlag = 0
@@ -89,28 +84,17 @@ def build_and_solve_model(
         # --- entry ---
 
         if (t, s) in fixed_entry:
-            # 1. Actief segment — gefixed op current_time
+            # Actief segment — gefixed op werkelijke entrytijd
             fixed = fixed_entry[(t, s)]
             entry[t, s] = model.addVar(
                 lb=fixed, ub=fixed,
                 vtype=GRB.CONTINUOUS,
                 name=f"entry[{t},{s}]",
             )
-
-        elif (t, s) in actual_entries:
-            # 2. Al betreden — gefixed op werkelijke entrytijd
-            ae = actual_entries[(t, s)]
-            entry[t, s] = model.addVar(
-                lb=ae, ub=ae,
-                vtype=GRB.CONTINUOUS,
-                name=f"entry[{t},{s}]",
-            )
-
         else:
-            # 3. Toekomstig segment — niet eerder dan gepland, niet in verleden
-            lb = max(current_time, sched_entry[(t, s)])
+            # Toekomstig segment — niet eerder dan current_time
             entry[t, s] = model.addVar(
-                lb=lb,
+                lb=current_time,
                 vtype=GRB.CONTINUOUS,
                 name=f"entry[{t},{s}]",
             )
@@ -152,18 +136,17 @@ def build_and_solve_model(
 
     for t in T:
         for s in path[t]:
-
             if (t, s) in occupied:
-                duration = occupied[(t, s)]
-            elif s in Sl:
-                duration = runtime[(t, s)]
+                model.addConstr(
+                    dep[t, s] >= current_time + occupied[(t, s)],
+                    name=f"C1_occupation[{t},{s}]",
+                )
             else:
-                duration = dwell[(t, s)]
-
-            model.addConstr(
-                dep[t, s] >= entry[t, s] + duration,
-                name=f"C1_occupation[{t},{s}]",
-            )
+                duration = runtime[(t, s)] if s in Sl else dwell[(t, s)]
+                model.addConstr(
+                    dep[t, s] >= entry[t, s] + duration,
+                    name=f"C1_occupation[{t},{s}]",
+                )
 
     # =========================================================================
     # C2 — Path continuity
@@ -202,8 +185,53 @@ def build_and_solve_model(
             )
 
     # =========================================================================
+    # C5 — Minimum dwell
+    # Trein mag niet vroeger vertrekken dan gepland op stationsegmenten
+    # waar hij effectief halteert (geen within-station-passing)
+    # =========================================================================
+                        # !!!  wnr shit resultaten, zet dit in comment
+    # for t in T:
+    #     for s in path[t]:
+    #         if halts.get((t, s), False):
+    #             model.addConstr(
+    #                 dep[t, s] >= sched_exit[(t, s)],
+    #                 name=f"C5_mindwell[{t},{s}]",
+    #             )
+
+
+    # =========================================================================
+    # Warm start
+    # =========================================================================
+    for s in S:
+        trains_on_seg = sorted(
+            [t for t in T if s in path[t]],
+            key=lambda t: expected_exit[(t, s)]
+        )
+        for k in range(len(trains_on_seg)):
+            for l in range(k + 1, len(trains_on_seg)):
+                i = trains_on_seg[k]
+                j = trains_on_seg[l]
+                if (i, j, s) in y:
+                    y[i, j, s].Start = 1.0
+                elif (j, i, s) in y:
+                    y[j, i, s].Start = 0.0
+
+    # =========================================================================
     # Solve
     # =========================================================================
+    model.update()
+
+    n_conflicts = sum(len(v) for v in conflicts.values())
+
+    print(
+        f"[t={current_time:.0f}] "
+        f"T={len(T)} "
+        f"S={len(S)} "
+        f"conf={n_conflicts} "
+        f"vars={model.NumVars} "
+        f"constr={model.NumConstrs} "
+        f"bin={len(y)}"
+    )
 
     model.optimize()
 

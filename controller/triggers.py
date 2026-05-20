@@ -337,7 +337,7 @@ class EventDrivenTrigger(BaseTrigger):
                 )
 
                 if segment.seg_type == SegmentType.STATION:
-                    # C2: niet vroeger vertrekken dan gepland
+                    # C2: niet vroeger vertrekken dan gepland #!!! dit is een hijkel punt blijkbaar
                     try:
                         t = max(
                             t + duration,

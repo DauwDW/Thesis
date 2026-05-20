@@ -77,7 +77,7 @@ class Train:
     train_no:        int
     train_type:      TrainType
     train_subtype:   TrainSubtype
-    path:            tuple[str, ...]          # tuple: hashbaar voor frozen dataclass
+    path:            tuple[str, ...]         
     halt_indicators: dict[str, bool]
     dynamics:        dict[str, str]
 

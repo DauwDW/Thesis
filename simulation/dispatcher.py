@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 
+from domain import train
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,8 +22,9 @@ class Dispatcher:
       - C2-constraint: min_exit_time voor WITHIN-STATION-DWELL segmenten
     """
 
-    def __init__(self, timetable, segments) -> None:
+    def __init__(self, timetable, segments, trains) -> None:
         self._timetable = timetable
+        self._trains = trains
         self._occupied: dict[str, int | None] = {
             seg_id: None for seg_id in segments
         }
@@ -58,14 +61,58 @@ class Dispatcher:
         """Geeft de verwachte vrijkomsttijd, of None als onbekend."""
         return self._expected_release.get(segment_id)
 
-    def min_exit_time(self, train_id: int, segment_id: str, entry_time: float) -> float:
-        """
-        C2-constraint: vroegste toegelaten exittijd.
+    # def min_exit_time(self, train_id: int, segment_id: str, entry_time: float) -> float:
+    #     """
+    #     C2-constraint: vroegste toegelaten exittijd.
 
-        Alleen actief voor WITHIN-STATION-DWELL (row.halts == True).
-        Voor alle andere segmenten: entry_time.
+    #     Alleen actief voor WITHIN-STATION-DWELL (row.halts == True).
+    #     Voor alle andere segmenten: entry_time.
+    #     """
+    #     # deze moet toegepast worden op de rescheduled mip
+    #     row = self._timetable.get(train_id, segment_id)
+    #     if not row.halts:
+    #         return entry_time 
+    #     return self._timetable.scheduled_departure(train_id, segment_id)
+
+    def min_exit_time(
+        self,
+        train_id: int,
+        segment_id: str,
+        entry_time: float,
+        state,
+    ) -> float:
         """
-        row = self._timetable.get(train_id, segment_id)
-        if not row.halts:
+        Vroegste toegelaten exittijd.
+
+        Voor dwell-segmenten:
+        - gebruik MIP-exit indien beschikbaar
+        - anders fallback op scheduled_departure
+
+        Voor andere segmenten:
+        - entry_time
+        """
+
+        train = self._trains[train_id]
+
+        if not train.halts_at(segment_id):
             return entry_time
-        return self._timetable.scheduled_departure(train_id, segment_id)
+
+        mip_exit = state.mip_exit_for(train_id, segment_id)
+
+        if mip_exit is not None:
+            return mip_exit
+
+        fallback = self._timetable.scheduled_exit(
+            train_id,
+            segment_id,
+        )
+
+        logger.debug(
+            "!! Als dit na de eerste reschedule is, fallback naar scheduled_departure voor dwell-segment: in simulatie, ervoor is dit normaal "
+            "train=%s seg=%s fallback_exit=%.1f",
+            train_id,
+            segment_id,
+            fallback,
+        )
+
+        return fallback
