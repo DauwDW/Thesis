@@ -157,13 +157,43 @@ def compute_metrics(df: pd.DataFrame) -> dict:
     pass_mask    = last_seg['train_type'] == 'P'
     freight_mask = last_seg['train_type'] == 'F'
 
-    # --- Total End Delay (enkel eindpunt) ---
-    ted_p = float(last_seg[pass_mask]['entry_delay'].fillna(0.0).sum())
-    ted_f = float(last_seg[freight_mask]['entry_delay'].fillna(0.0).sum())
+    # # --- Total End Delay (enkel eindpunt) ---
+    # ted_p = float(last_seg[pass_mask]['entry_delay'].fillna(0.0).sum())
+    # ted_f = float(last_seg[freight_mask]['entry_delay'].fillna(0.0).sum())
 
-    # --- Total Arrival Delay (alle segmenten) ---
-    tad_p = float(df[df['train_type'] == 'P']['entry_delay'].fillna(0.0).sum())
-    tad_f = float(df[df['train_type'] == 'F']['entry_delay'].fillna(0.0).sum())
+    # # --- Total Arrival Delay (alle segmenten) ---
+    # tad_p = float(df[df['train_type'] == 'P']['entry_delay'].fillna(0.0).sum())
+    # tad_f = float(df[df['train_type'] == 'F']['entry_delay'].fillna(0.0).sum())
+
+    # --- Total End Delay (enkel positieve eindvertraging) ---
+    ted_p = float(
+        last_seg[pass_mask]['entry_delay']
+        .clip(lower=0)
+        .fillna(0.0)
+        .sum()
+    )
+
+    ted_f = float(
+        last_seg[freight_mask]['entry_delay']
+        .clip(lower=0)
+        .fillna(0.0)
+        .sum()
+    )
+
+    # --- Total Arrival Delay (enkel positieve vertragingen) ---
+    tad_p = float(
+        df[df['train_type'] == 'P']['entry_delay']
+        .clip(lower=0)
+        .fillna(0.0)
+        .sum()
+    )
+
+    tad_f = float(
+        df[df['train_type'] == 'F']['entry_delay']
+        .clip(lower=0)
+        .fillna(0.0)
+        .sum()
+    )
 
     # --- Aantallen treinen die eindbestemming bereikten ---
     n_pass    = int(pass_mask.sum())

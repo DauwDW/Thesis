@@ -169,7 +169,7 @@ def build_and_solve_model(
     # Treinen mogen max 2 minuten te vroeg het netwerk binnenkomen
     # =========================================================================
 
-    EARLY_ENTRY_SLACK = 120
+    EARLY_ENTRY_SLACK = 60
 
     for t in T:
 

@@ -115,8 +115,8 @@ def results_to_dataframe(state, trains, timetable):
                 "planned_exit":  planned_exit,
                 "actual_entry":  actual_entry,
                 "actual_exit":   actual_exit,
-                "entry_delay":   max(0.0, actual_entry - planned_entry) if planned_entry is not None else None,
-                "exit_delay":    max(0.0, actual_exit  - planned_exit)  if planned_exit  is not None else None,
+                "entry_delay": actual_entry - planned_entry,
+                "exit_delay":  actual_exit - planned_exit,
             })
 
     return pd.DataFrame(records)

@@ -47,7 +47,7 @@ SOLVER_TIMEOUT_SECONDS = 60
 SOLVER_MIP_GAP         = 0.01
 
 RESCHEDULING_HORIZON = 7200
-CONFLICT_WINDOW = 600   #denk dat dit nergens meer gebruikt wordt
+CONFLICT_WINDOW = 1200   #denk dat dit nergens meer gebruikt wordt
 
 # =============================================================================
 # Monte Carlo trigger
