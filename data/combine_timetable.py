@@ -32,6 +32,15 @@ def combine_timetables(n_freight: int) -> pd.DataFrame:
     passenger = normalize_to_base_date(passenger)  # 2025-03-03 → 2025-01-01
     freight['TRAIN_TYPE'] = 'freight'
 
+    overlap = set(passenger['TRAIN_NO']) & set(freight['TRAIN_NO'])
+    if overlap:
+        raise ValueError(
+            "Passenger en freight bevatten overlappende TRAIN_NO waarden; "
+            "dit veroorzaakt key-collisions in de Timetable. "
+            f"Voorbeeld overlap: {sorted(overlap)[:5]}"
+        )
+
+
     combined = pd.concat([passenger, freight], ignore_index=True)
 
     combined = add_time_in_seconds(combined)
@@ -40,6 +49,13 @@ def combine_timetables(n_freight: int) -> pd.DataFrame:
     combined['PLANNED_EXIT']  = pd.to_datetime(combined['PLANNED_EXIT']).dt.round('s')
     combined['ENTRY_SECONDS'] = combined['ENTRY_SECONDS'].round().astype(int)
     combined['EXIT_SECONDS']  = combined['EXIT_SECONDS'].round().astype(int)
+
+    invalid = combined['EXIT_SECONDS'] < combined['ENTRY_SECONDS']
+    if invalid.any():
+        n_invalid = int(invalid.sum())
+        raise ValueError(
+            f"Gecombineerde timetable bevat {n_invalid} segment(en) met EXIT_SECONDS < ENTRY_SECONDS"
+        )
 
     combined = combined.drop(
         columns=['SECTION_MACRO', 'RELATION_DIRECTION'],

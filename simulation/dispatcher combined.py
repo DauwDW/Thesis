@@ -1,5 +1,3 @@
-# dispatcher FULL FSFS
-
 from __future__ import annotations
 
 import logging
@@ -30,50 +28,15 @@ class Dispatcher:
       - C2-constraint via min_exit_time
     """
 
-    def __init__(self, timetable, segments, trains, strict_order: bool = False) -> None:
+    def __init__(self, timetable, segments, trains) -> None:
         self._timetable = timetable
         self._trains = trains
-        self._strict_order = strict_order  # default False
         self._occupied: dict[str, int | None] = {
             seg_id: None for seg_id in segments
         }
         self._waiting: dict[str, list[int]] = {
             seg_id: [] for seg_id in segments
         }
-
-        # ==========================================================================
-        # Strict order
-        # ==========================================================================
-
-        def _strict_order_allows(self, train_id: int, segment_id: str, state) -> bool:
-            """
-            True als er geen niet-aangekomen trein bestaat met lagere mip_entry
-            op dit segment. Alleen actief wanneer strict_order=True.
-
-            Voor treinen zonder mip_entry op dit segment (out-of-scope of nog
-            geen MIP-call gehad): geen volgorde-constraint, return True.
-            """
-            my_mip = state.mip_entry_for(train_id, segment_id)
-            if my_mip is None:
-                return True
-
-            for other_id in self._trains:
-                if other_id == train_id:
-                    continue
-                if state.is_finished(other_id):
-                    continue
-                other_mip = state.mip_entry_for(other_id, segment_id)
-                if other_mip is None or other_mip >= my_mip:
-                    continue
-                try:
-                    state.actual_entry(other_id, segment_id)
-                    continue
-                except KeyError:
-                    return False
-
-            return True
-
-    # ==========================================================================
 
     # ==========================================================================
     # Resource requests
@@ -99,22 +62,6 @@ class Dispatcher:
         if self._occupied[segment_id] is not None:
             self._enqueue(train_id, segment_id)
             return False
-        
-        if self._strict_order:
-            my_mip = state.mip_entry_for(train_id, segment_id) if state else None
-            if my_mip is not None:
-                for other_id in self._trains:
-                    if other_id == train_id:
-                        continue
-                    other_mip = state.mip_entry_for(other_id, segment_id)
-                    if other_mip is None or other_mip >= my_mip:
-                        continue
-                    try:
-                        state.actual_entry(other_id, segment_id)
-                        continue  # al binnen geweest
-                    except KeyError:
-                        self._enqueue(train_id, segment_id)
-                        return False
 
         # Segment is vrij — mag déze trein voorgaan?
         if waiters and self._priority_winner(segment_id, state) != train_id:

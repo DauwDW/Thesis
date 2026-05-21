@@ -209,6 +209,9 @@ def run_simulation(
     # Reproduceerbaarheid
     seed:                 int   = settings.SIMULATION_SEED,
 
+    # Dispatcher
+    strict_order:         bool  = False, #!!!
+
     # Output
     output_dir:           Path | str = settings.RESULTS_DIR,
     save:                 bool  = True,
@@ -295,6 +298,7 @@ def run_simulation(
         timetable  = timetable,
         controller = controller,
         seed       = seed,
+        strict_order= strict_order #!!!
     )
 
     deadlock_detected = False

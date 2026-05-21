@@ -49,8 +49,8 @@ class Simulator:
       vrijkomt (zie _wake_next). Prioriteit binnen de queue is gebaseerd
       op mip_entry uit SystemState, met FIFO als fallback.
     """
-
-    def __init__(self, trains, segments, timetable, controller, seed=None):
+#!!!!! verwijder hierna strict_order
+    def __init__(self, trains, segments, timetable, controller, seed=None, strict_order: bool = False):
         self._trains = trains
         self._segments = segments
         self._timetable = timetable
@@ -58,7 +58,7 @@ class Simulator:
         self._rng = np.random.default_rng(seed)
         self._state = SystemState(trains=trains, timetable=timetable, start_time=0.0)
         self._queue = EventQueue()
-        self._dispatcher = Dispatcher(timetable=timetable, segments=segments, trains=trains)
+        self._dispatcher = Dispatcher(timetable=timetable, segments=segments, trains=trains, strict_order=strict_order)
         self._solutions = []
 
     # ------------------------------------------------------------------
@@ -493,42 +493,42 @@ def _is_passing(train, segment) -> bool:
 
 
 def sample_duration(train, segment, timetable, entry_time: float, rng) -> float:
-    # """
-    # Sample de fysieke bezettingsduur van een segment.
+    """
+    Sample de fysieke bezettingsduur van een segment.
 
-    # Drie gevallen:
-    #   1. Stationspassing  → 1s (via sample_running_time met is_passing=True)
-    #   2. Stationsstop     → geplande dwell uit timetable (C2-conform)
-    #   3. Lijnsegment      → stochastisch via reality.sampling,
-    #                         fallback op gepland tijdsverschil uit timetable.
+    Drie gevallen:
+      1. Stationspassing  → 1s (via sample_running_time met is_passing=True)
+      2. Stationsstop     → geplande dwell uit timetable (C2-conform)
+      3. Lijnsegment      → stochastisch via reality.sampling,
+                            fallback op gepland tijdsverschil uit timetable.
 
-    # De ondergrens van 1s voorkomt dat events op exact dezelfde
-    # tijdstempel landen, wat de event-queue ordening verstoort.
-    # """
-    # # 1. Stationspassing
-    # if _is_passing(train, segment):
-    #     return 1 
+    De ondergrens van 1s voorkomt dat events op exact dezelfde
+    tijdstempel landen, wat de event-queue ordening verstoort.
+    """
+    # 1. Stationspassing
+    if _is_passing(train, segment):
+        return 1 
 
-    # # 2. Stationsstop
-    # if segment.is_station:
-    #         if _seconds_to_period(entry_time) in ("MORNING PEAK", "EVENING PEAK"):
-    #             return 120
-    #         return 60
+    # 2. Stationsstop
+    if segment.is_station:
+            if _seconds_to_period(entry_time) in ("MORNING PEAK", "EVENING PEAK"):
+                return 120
+            return 60
 
-    # # 3. Lijnsegment
-    # sampled = sample_running_time(
-    #     section    = segment.id,
-    #     train_type = train.train_subtype.value,
-    #     dynamics   = train.dynamics_at(segment.id),
-    #     period     = _seconds_to_period(entry_time),
-    #     rng        = rng,
-    # )
-    # if sampled is not None:
-    #     return max(1.0, float(sampled))
+    # 3. Lijnsegment
+    sampled = sample_running_time(
+        section    = segment.id,
+        train_type = train.train_subtype.value,
+        dynamics   = train.dynamics_at(segment.id),
+        period     = _seconds_to_period(entry_time),
+        rng        = rng,
+    )
+    if sampled is not None:
+        return max(1.0, float(sampled))
 
-    # row = timetable.get(train.id, segment.id)
-    # return max(1.0, float(row.exit_seconds - row.entry_seconds))
-    return timetable.scheduled_exit(train.id, segment.id) - timetable.scheduled_entry(train.id, segment.id)
+    row = timetable.get(train.id, segment.id)
+    return max(1.0, float(row.exit_seconds - row.entry_seconds))
+    # return timetable.scheduled_exit(train.id, segment.id) - timetable.scheduled_entry(train.id, segment.id)
 
 
 def _seconds_to_period(seconds: float) -> str:

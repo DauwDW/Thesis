@@ -44,10 +44,10 @@ DELTA_MAX = 86400  # maximale vertraging (s)
 L         = 86400  # big-M
 
 SOLVER_TIMEOUT_SECONDS = 60
-SOLVER_MIP_GAP         = 0.00001
+SOLVER_MIP_GAP         = 0.001
 
-RESCHEDULING_HORIZON = 12000
-CONFLICT_WINDOW = 1200 #denk dat dit nergens meer gebruikt wordt
+RESCHEDULING_HORIZON = 7200
+CONFLICT_WINDOW = 1800 
 
 # =============================================================================
 # Monte Carlo trigger

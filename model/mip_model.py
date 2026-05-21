@@ -130,10 +130,10 @@ def build_and_solve_model(
         gp.quicksum(
             weights[t] * delay[t, final_segment[t]]
             for t in T
-        ) 
-        + epsilon * gp.quicksum(entry[t, s] for (t, s) in TS),
+        ), 
+        # + epsilon * gp.quicksum(entry[t, s] for (t, s) in TS),
 
-        ## timespan penaliseren
+        # ## timespan penaliseren
         # +
         # small_alpha * gp.quicksum(
         #     dep[t, final_segment[t]] - entry[t, path[t][0]]
