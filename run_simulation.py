@@ -326,4 +326,4 @@ def run_simulation(
     print(f"{status}. {len(df)} rows, {df['train_id'].nunique()} trains.")
     print(f"Controller: {controller_summary}")
 
-    return state, df, meta, config_dir
+    return state, df, meta, config_dir, simulator

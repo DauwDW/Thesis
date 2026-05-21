@@ -7,68 +7,6 @@ from model.instance import build_instance
 from model.solver import solve
 
 
-# =============================================================================
-# FCFS fallback
-# =============================================================================
-
-def compute_fcfs_order(state, segments: dict) -> dict[str, list[int]]:
-    """
-    Simpele FCFS fallback.
-
-    Per segment:
-      - neem alle actieve treinen die het segment nog moeten doen
-      - sorteer op actuele aanwezigheid / voortgang
-
-    Belangrijk:
-      Deze functie bepaalt enkel een ORDE.
-      De simulator/dispatcher bepalen de effectieve timing.
-    """
-    active_ids = state.active_train_ids()
-
-    remaining_paths = {
-        train_id: set(state.remaining_path(train_id))
-        for train_id in active_ids
-    }
-
-    result: dict[str, list[int]] = {}
-
-    for segment_id in segments:
-
-        candidates = [
-            train_id
-            for train_id in active_ids
-            if segment_id in remaining_paths[train_id]
-        ]
-
-        if not candidates:
-            continue
-
-        ordering = []
-
-        for train_id in candidates:
-
-            # trein al op segment geweest?
-            try:
-                entry = state.actual_entry(train_id, segment_id)
-                ordering.append((0, entry, train_id))
-                continue
-            except KeyError:
-                pass
-
-            # anders: huidige voortgang gebruiken
-            delay = state.current_delay(train_id)
-
-            ordering.append((1, delay, train_id))
-
-        ordering.sort()
-
-        result[segment_id] = [
-            train_id
-            for _, _, train_id in ordering
-        ]
-
-    return result
-
 
 # =============================================================================
 # Controller result
@@ -142,6 +80,7 @@ class Controller:
         self._n_rescheduled = 0
         self._n_fcfs_fallback = 0
         self._n_skipped = 0
+        self._consecutive_failures = 0
 
     # =========================================================================
     # Main entry point
@@ -198,7 +137,7 @@ class Controller:
         # ---------------------------------------------------------------------
 
         if solution.is_feasible():
-
+            self._consecutive_failures = 0
             self.trigger.notify_rescheduled(current_time, state)
 
             self._n_rescheduled += 1
@@ -225,23 +164,17 @@ class Controller:
         # ---------------------------------------------------------------------
 
         self._n_fcfs_fallback += 1
+        self._consecutive_failures += 1
 
-        fcfs_order = compute_fcfs_order(
-            state=state,
-            segments=self.segments,
-        )
-
-        self._log(
-            current_time,
-            "FCFS_FALLBACK",
-            f"solver_status={solution.status}",
-        )
 
         return ControllerResult(
-            action="fcfs_fallback",
-            fcfs_order=fcfs_order,
+            action="no_solution",
             runtime=time.time() - start,
         )
+    
+    @property
+    def consecutive_failures(self) -> int:
+        return self._consecutive_failures
 
     # =========================================================================
     # Logging
@@ -270,6 +203,7 @@ class Controller:
             "n_evaluated":            self.trigger.n_evaluated,
             "total_steps":            self._n_rescheduled + self._n_fcfs_fallback + self._n_skipped,
             "total_solver_runtime_s": sum(self._solver_runtimes),
+            "max_consecutive_failures":   self._consecutive_failures,
         }
 
     def __repr__(self) -> str:

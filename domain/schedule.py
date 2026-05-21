@@ -79,7 +79,7 @@ class Timetable:
         return self._data[(train_no, segment_id)].exit_seconds
 
     def running_time(self, train_no: int, segment_id: str) -> float:
-        """RT_t,s — minimale rijtijd op lijnsegment."""
+        """RT_t,s — minimale rijtijd op lijnsegment.""" 
         rt = self._data[(train_no, segment_id)].running_time
         if rt is None:
             raise ValueError(

@@ -11,6 +11,9 @@ from simulation.state import SystemState
 logger = logging.getLogger(__name__)
 
 
+_POLL_INTERVAL = 20
+
+
 # Objective-drempel waarboven een run als deadlock wordt beschouwd.
 # Wanneer de MIP-objective deze waarde overschrijdt, gooit de simulator
 # een DeadlockDetected exception. run_simulation.py vangt deze op en
@@ -42,12 +45,11 @@ class Simulator:
       en TrainEntered-events worden gepusht op max(MIP-tijd, phys_ready,
       current_time).
 
-    Resource queueing:
-      Bij blokkering komt een trein in de waiting-list van het volgende
-      segment (Dispatcher._waiting). Er wordt geen retry-event gepusht;
-      de dispatcher wekt de hoogste-prioriteitswachter zodra het segment
-      vrijkomt (zie _wake_next). Prioriteit binnen de queue is gebaseerd
-      op mip_entry uit SystemState, met FIFO als fallback.
+    Smart retry:
+      Bij blokkering retried een trein op expected_release_time van het
+      volgende segment. Als expected_release stale is (< current_time),
+      wordt _POLL_INTERVAL gebruikt als fallback om een 1-seconde
+      polling loop te vermijden.
     """
 
     def __init__(self, trains, segments, timetable, controller, seed=None):
@@ -125,99 +127,15 @@ class Simulator:
     def _handle_entered(self, event: TrainEntered) -> None:
         current_time = event.time       # Overbodig want al in run() toch?
 
-        # ==========================================================
-        # DIAGNOSTIC:
-        # detect REAL artificial waiting
-        # ==========================================================
-
-        # ----------------------------------------------------------
-        # 1. Zoek vorige segment van deze trein
-        # ----------------------------------------------------------
-
-        prev_seg = self._previous_segment(
-            event.train_id,
-            event.segment_id
-        )
-
-        prev_exit = None
-
-        if prev_seg is not None:
-
-            try:
-                prev_exit = self._state.actual_exit(
-                    event.train_id,
-                    prev_seg
-                )
-            except KeyError:
-                pass
-
-        # ----------------------------------------------------------
-        # 2. Zoek wanneer segment effectief vrij werd
-        # ----------------------------------------------------------
-
-        segment_free_since = None
-
-        occupied_by = self._dispatcher._occupied[event.segment_id]
-
-        if occupied_by is None:
-
-            latest_exit = -float("inf")
-
-            for train_id in self._trains:
-
-                try:
-                    exit_time = self._state.actual_exit(
-                        train_id,
-                        event.segment_id
-                    )
-
-                    latest_exit = max(latest_exit, exit_time)
-
-                except KeyError:
-                    pass
-
-            if latest_exit > -float("inf"):
-                segment_free_since = latest_exit
-
-        # ----------------------------------------------------------
-        # 3. Bereken earliest feasible entry
-        # ----------------------------------------------------------
-
-        candidates = []
-
-        if prev_exit is not None:
-            candidates.append(prev_exit)
-
-        if segment_free_since is not None:
-            candidates.append(segment_free_since)
-
-        if prev_exit is not None and candidates:
-
-            earliest_feasible = max(candidates)
-
-            artificial_wait = event.time - earliest_feasible
-
-            # alleen loggen als echt substantieel
-            if artificial_wait > 1:
-
-                print(
-                    f"[ARTIFICIAL WAIT] "
-                    f"train={event.train_id} "
-                    f"segment={event.segment_id} "
-                    f"prev_exit={prev_exit} "
-                    f"segment_free_since={segment_free_since} "
-                    f"earliest_feasible={earliest_feasible:.1f} "
-                    f"scheduled_entry={event.time:.1f} "
-                    f"extra_wait={artificial_wait:.1f}s"
-                )
-
-        ### einde diagnostiek !!!
-
-        if not self._dispatcher.request_entry(
-            event.train_id, event.segment_id, current_time, state=self._state,
-        ):
-            # In de waiting-list gezet door request_entry — dispatcher wekt
-            # ons via _wake_next zodra het segment vrijkomt.
+        if not self._dispatcher.request_entry(event.train_id, event.segment_id, current_time):
+            release = self._dispatcher.expected_release_time(event.segment_id)
+            retry = release if (release is not None and release > current_time) \
+                    else current_time + _POLL_INTERVAL
+            self._queue.push(TrainEntered(
+                time=retry,
+                train_id=event.train_id,
+                segment_id=event.segment_id,
+            ))
             return
 
         self._dispatcher.confirm_entry(event.train_id, event.segment_id)
@@ -227,6 +145,7 @@ class Simulator:
             time=current_time,
         )
         ready_time = self._compute_ready_time(event.train_id, event.segment_id, current_time)
+        self._dispatcher.set_expected_release(event.segment_id, ready_time)
         self._queue.push(TrainReadyToExit(
             time=ready_time,
             train_id=event.train_id,
@@ -245,16 +164,21 @@ class Simulator:
                 segment_id=event.segment_id,
                 time=current_time,
             )
-            self._wake_next(event.segment_id, current_time)
             result = self._controller.step(self._state, current_time)
             self._apply_result(result)
             return
 
         # --- geblokkeerd ---
-        if not self._dispatcher.request_entry(
-            event.train_id, next_seg, current_time, state=self._state,
-        ):
-            # In de waiting-list van next_seg — dispatcher wekt ons.
+        if not self._dispatcher.request_entry(event.train_id, next_seg, current_time):
+            release = self._dispatcher.expected_release_time(next_seg)
+            retry = release if (release is not None and release > current_time) \
+                    else current_time + _POLL_INTERVAL
+            self._dispatcher.set_expected_release(event.segment_id, retry)
+            self._queue.push(TrainReadyToExit(
+                time=retry,
+                train_id=event.train_id,
+                segment_id=event.segment_id,
+            ))
             result = self._controller.step(self._state, current_time)
             self._apply_result(result)
             return
@@ -273,46 +197,15 @@ class Simulator:
             time=current_time,
         )
         ready_time = self._compute_ready_time(event.train_id, next_seg, current_time)
+        self._dispatcher.set_expected_release(next_seg, ready_time)
         self._queue.push(TrainReadyToExit(
             time=ready_time,
             train_id=event.train_id,
             segment_id=next_seg,
         ))
-        self._wake_next(event.segment_id, current_time)
         result = self._controller.step(self._state, current_time)
         self._apply_result(result)
 
-    # ------------------------------------------------------------------
-    # Wake-up van wachters in dispatcher-queue
-    # ------------------------------------------------------------------
-
-    def _wake_next(self, segment_id: str, current_time: float) -> None:
-        """
-        Wek de hoogste-prioriteits-wachter op een net-vrijgekomen segment.
-
-        De wachter zit nog steeds op zijn vorige segment (current_segment),
-        tenzij hij nog niet gestart is — dan wachtte hij op zijn first_segment
-        via een TrainEntered-event. We pushen het juiste event-type op
-        current_time, zodat de wachter onmiddellijk opnieuw request_entry doet.
-        """
-        next_id = self._dispatcher.next_waiter(segment_id, state=self._state)
-        if next_id is None:
-            return
-
-        current_seg = self._state.current_segment(next_id)
-
-        if current_seg is None:
-            self._queue.cancel_train_entered(next_id, segment_id)
-            self._queue.push(TrainEntered(
-                time=current_time, train_id=next_id, segment_id=segment_id,
-            ))
-        else:
-            self._queue.cancel_ready_to_exit(next_id, current_seg)
-            self._queue.push(TrainReadyToExit(
-                time=current_time, train_id=next_id, segment_id=current_seg,
-            ))
-
-    # ------------------------------------------------------------------
     # ------------------------------------------------------------------
     # Controller resultaat verwerken
     # ------------------------------------------------------------------
@@ -372,10 +265,6 @@ class Simulator:
             self._state.clear_mip_schedule(train_id)
             for seg_id, (mip_e, mip_d) in seg_schedule.items():
                 self._state.record_mip_schedule(train_id, seg_id, mip_e, mip_d)
-            
-            # Trein wordt herplanned naar een nieuwe ready-time — pas op zijn
-            # nieuwe TrainReadyToExit-event mag hij opnieuw in een queue komen.
-            self._dispatcher.remove_from_queues(train_id)
 
             current_seg = self._state.current_segment(train_id)
 
@@ -451,27 +340,6 @@ class Simulator:
         )
 
         return max(phys_ready, min_exit)
-    
-
-#!!! helper diagnostiek
-    def _previous_segment(
-        self,
-        train_id: int,
-        segment_id: str,
-    ) -> str | None:
-
-        train = self._trains[train_id]
-        path  = train.path
-
-        try:
-            idx = path.index(segment_id)
-        except ValueError:
-            return None
-
-        if idx == 0:
-            return None
-
-        return path[idx - 1]
 
 # =============================================================================
 # Hulpfuncties (module-niveau)
@@ -493,42 +361,42 @@ def _is_passing(train, segment) -> bool:
 
 
 def sample_duration(train, segment, timetable, entry_time: float, rng) -> float:
-    # """
-    # Sample de fysieke bezettingsduur van een segment.
+    """
+    Sample de fysieke bezettingsduur van een segment.
 
-    # Drie gevallen:
-    #   1. Stationspassing  → 1s (via sample_running_time met is_passing=True)
-    #   2. Stationsstop     → geplande dwell uit timetable (C2-conform)
-    #   3. Lijnsegment      → stochastisch via reality.sampling,
-    #                         fallback op gepland tijdsverschil uit timetable.
+    Drie gevallen:
+      1. Stationspassing  → 1s (via sample_running_time met is_passing=True)
+      2. Stationsstop     → geplande dwell uit timetable (C2-conform)
+      3. Lijnsegment      → stochastisch via reality.sampling,
+                            fallback op gepland tijdsverschil uit timetable.
 
-    # De ondergrens van 1s voorkomt dat events op exact dezelfde
-    # tijdstempel landen, wat de event-queue ordening verstoort.
-    # """
-    # # 1. Stationspassing
-    # if _is_passing(train, segment):
-    #     return 1 
+    De ondergrens van 1s voorkomt dat events op exact dezelfde
+    tijdstempel landen, wat de event-queue ordening verstoort.
+    """
+    # 1. Stationspassing
+    if _is_passing(train, segment):
+        return 1 #!!! verander als je ooit within-station-passing tijd wil aanpassen
 
-    # # 2. Stationsstop
-    # if segment.is_station:
-    #         if _seconds_to_period(entry_time) in ("MORNING PEAK", "EVENING PEAK"):
-    #             return 120
-    #         return 60
+    # 2. Stationsstop
+    if segment.is_station:
+        try:
+            return max(1.0, float(timetable.dwell_time(train.id, segment.id)))
+        except Exception:
+            return 60.0
 
-    # # 3. Lijnsegment
-    # sampled = sample_running_time(
-    #     section    = segment.id,
-    #     train_type = train.train_subtype.value,
-    #     dynamics   = train.dynamics_at(segment.id),
-    #     period     = _seconds_to_period(entry_time),
-    #     rng        = rng,
-    # )
-    # if sampled is not None:
-    #     return max(1.0, float(sampled))
+    # 3. Lijnsegment
+    sampled = sample_running_time(
+        section    = segment.id,
+        train_type = train.train_subtype.value,
+        dynamics   = train.dynamics_at(segment.id),
+        period     = _seconds_to_period(entry_time),
+        rng        = rng,
+    )
+    if sampled is not None:
+        return max(1.0, float(sampled))
 
-    # row = timetable.get(train.id, segment.id)
-    # return max(1.0, float(row.exit_seconds - row.entry_seconds))
-    return timetable.scheduled_exit(train.id, segment.id) - timetable.scheduled_entry(train.id, segment.id)
+    row = timetable.get(train.id, segment.id)
+    return max(1.0, float(row.exit_seconds - row.entry_seconds))
 
 
 def _seconds_to_period(seconds: float) -> str:

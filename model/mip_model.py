@@ -47,12 +47,13 @@ def build_and_solve_model(
     verbose=True,
 ):
     
-    DWELL_SLACK = 3600
+    DWELL_SLACK = 3600 # Deze constraint is wss overbodig !!!
     model = gp.Model("rail_rescheduling")
     #Debug
     model.Params.OutputFlag = 0
-    # small_alpha = 1
+    # small_alpha = 0.00001
     model.Params.MIPGap = SOLVER_MIP_GAP
+    epsilon = 0.000001
 
 
     if not verbose:
@@ -129,7 +130,16 @@ def build_and_solve_model(
         gp.quicksum(
             weights[t] * delay[t, final_segment[t]]
             for t in T
-        ),
+        ) 
+        + epsilon * gp.quicksum(entry[t, s] for (t, s) in TS),
+
+        ## timespan penaliseren
+        # +
+        # small_alpha * gp.quicksum(
+        #     dep[t, final_segment[t]] - entry[t, path[t][0]]
+        #     for t in T
+        # ),
+        ## tussentijdse vertragingen penaliseren
         # + small_alpha * gp.quicksum(
         #     delay[t, s] for t in T for s in path[t] if s != final_segment[t]
         # )
@@ -166,10 +176,10 @@ def build_and_solve_model(
     
     # =========================================================================
     # C2b — Limited early entry for first segment
-    # Treinen mogen max 2 minuten te vroeg het netwerk binnenkomen
+    # Treinen mogen max 1 minuut te vroeg het netwerk binnenkomen
     # =========================================================================
 
-    EARLY_ENTRY_SLACK = 60
+    EARLY_ENTRY_SLACK = 0
 
     for t in T:
 

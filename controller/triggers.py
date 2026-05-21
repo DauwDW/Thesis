@@ -102,7 +102,7 @@ class BaseTrigger:
     def notify_evaluated(self, current_time: float):
         self._last_evaluation_time = current_time
 
-    def should_reschedule(self, state, current_time: float) -> bool:
+    def should_reschedule(self, state, current_time: float) -> bool:        
         raise NotImplementedError
 
     def _time_since_reschedule(self, current_time: float) -> float:
@@ -127,7 +127,7 @@ class PeriodicTrigger(BaseTrigger):
         self._last_reschedule_time = 0.0
 
     def should_reschedule(self, state, current_time: float) -> bool:
-        result = self._time_since_reschedule(current_time) >= self.periodic_freq
+        result = (self._time_since_reschedule(current_time) >= self.periodic_freq)
         self.notify_evaluated(current_time)
         return result
 
@@ -283,10 +283,11 @@ class EventDrivenTrigger(BaseTrigger):
                     entry_time = entry_time,
                     rng        = rng,
                 )
+                # moet het hier niet full_dur = sampled_duration zijn?
 
                 proj_exit = current_time + max(1.0, full_dur - elapsed)
                 seg_free_at[current_seg] = max(
-                    seg_free_at.get(current_seg, 0.0), proj_exit
+                    seg_free_at.get(current_seg, 0.0), proj_exit        # hier zou je eig toch geen max() moeten gebruiken want het kan niet dat 2 treinen op hetzelfde moment dezelfde current_seg hebben
                 )
                 start[train_id] = proj_exit
 
@@ -336,12 +337,12 @@ class EventDrivenTrigger(BaseTrigger):
                     rng        = rng,
                 )
 
-                if segment.seg_type == SegmentType.STATION:
+                if segment.seg_type == SegmentType.STATION:         #within-station-passing check zou hier moeten !!!
                     # C2: niet vroeger vertrekken dan gepland #!!! dit is een hijkel punt blijkbaar
                     try:
                         t = max(
                             t + duration,
-                            self._timetable.scheduled_departure(train_id, seg_id),
+                            self._timetable.scheduled_exit(train_id, seg_id),
                         )
                     except KeyError:
                         t += duration
@@ -353,7 +354,7 @@ class EventDrivenTrigger(BaseTrigger):
             # Vertraging t.o.v. geplande exit van het laatste segment
             last_seg = remaining_path[-1]
             try:
-                planned     = self._timetable.scheduled_departure(train_id, last_seg)
+                planned     = self._timetable.scheduled_exit(train_id, last_seg)
                 total_delay += max(0.0, t - planned)
                 n_simulated += 1
             except KeyError:

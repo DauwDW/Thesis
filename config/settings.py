@@ -28,7 +28,7 @@ DISPATCHER_POLL_INTERVAL = 10.0
 # =============================================================================
 # Freight sampling
 # =============================================================================
-FREIGHT_RUNNING_TIME_SCALE = 1.3
+FREIGHT_RUNNING_TIME_SCALE = 1.3  # normaal 1.3
 
 PASSING_DURATION_PASSENGER = 1  # seconden
 PASSING_DURATION_FREIGHT   = 1  # seconden
@@ -44,14 +44,14 @@ DELTA_MAX = 86400  # maximale vertraging (s)
 L         = 86400  # big-M
 
 SOLVER_TIMEOUT_SECONDS = 60
-SOLVER_MIP_GAP         = 0.01
+SOLVER_MIP_GAP         = 0.00001
 
-RESCHEDULING_HORIZON = 7200
-CONFLICT_WINDOW = 1200   #denk dat dit nergens meer gebruikt wordt
+RESCHEDULING_HORIZON = 12000
+CONFLICT_WINDOW = 1200 #denk dat dit nergens meer gebruikt wordt
 
 # =============================================================================
 # Monte Carlo trigger
 # =============================================================================
-MC_DELAY_PER_TRAIN = 180
+MC_DELAY_PER_TRAIN = 120
 MC_ITERATIONS        = 5
 THRESHOLD_CONFIDENCE = 0.6

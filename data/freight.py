@@ -3,7 +3,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from config.settings import PASSING_DURATION_FREIGHT
+from config.settings import PASSING_DURATION_FREIGHT, FREIGHT_RUNNING_TIME_SCALE
 
 logger = logging.getLogger(__name__)
 
@@ -102,9 +102,9 @@ def build_running_time_lookup(passenger_df: pd.DataFrame) -> dict[tuple[str, str
     return (
         between.groupby(['SOURCE', 'TARGET'])['RUNNING_TIME_SEC']
         .median()
-        .mul(1.3)
+        .mul(FREIGHT_RUNNING_TIME_SCALE)
         .to_dict()
-    ) | {k: v * 1.3 for k, v in _FALLBACK_PASSENGER_RUNNING_TIMES.items()}
+    ) | {k: v * FREIGHT_RUNNING_TIME_SCALE for k, v in _FALLBACK_PASSENGER_RUNNING_TIMES.items()}
 
 
 # =============================================================================
