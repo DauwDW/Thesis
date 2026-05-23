@@ -102,19 +102,24 @@
 #   Robuustheid: infeasible_run
 
 from __future__ import annotations
-
+from domain.train import TrainSubtype
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-
+_ALL_SUBTYPES = [st.value for st in TrainSubtype]   # ['IC','L','S','EURST','ICE','INT','freight']
 # Metric kolommen waarover mean en std berekend worden bij aggregatie
 _METRIC_COLS = [
     'TED_passenger', 'TED_freight', 'TED_combined',
     'TAD_passenger', 'TAD_freight', 'TAD_combined',
     'delay_ratio',
     'total_solve_time', 'n_rescheduled', 'n_fcfs_fallback', 'n_skipped',
+    # per-subtype TED + counts
+    *[f'TED_{st}'           for st in _ALL_SUBTYPES],
+    *[f'n_{st}'             for st in _ALL_SUBTYPES],
+    *[f'n_unfinished_{st}'  for st in _ALL_SUBTYPES],
+    'n_unfinished_total',
 ]
 
 # Configuratiekolommen die identiek zijn voor alle seeds van dezelfde configuratie
@@ -123,6 +128,7 @@ _CONFIG_COLS = [
     'controller_freq', 'threshold_conf', 'priority',
     'weight_passenger', 'weight_freight', 'gamma', 'upgrade',
     'objective', 'freight_pct', 'mc_delay_per_train', 'solver_timeout',
+    *[f'w_{st}' for st in _ALL_SUBTYPES],
 ]
 
 
@@ -130,14 +136,17 @@ _CONFIG_COLS = [
 # Metrics berekenen
 # =============================================================================
 
-def compute_metrics(df: pd.DataFrame) -> dict:
+def compute_metrics(df: pd.DataFrame, trains: dict | None = None) -> dict:
     """
     Berekent alle evaluatiemetrieken uit het df van run_simulation.
 
     Parameters
     ----------
     df : pd.DataFrame — output van run_simulation.results_to_dataframe()
-         Vereiste kolommen: train_id, train_type, planned_entry, entry_delay
+         Vereiste kolommen: train_id, train_type, train_subtype,
+         planned_entry, entry_delay
+    trains : dict[int, Train] | None — volledige treinenset; nodig voor
+         n_unfinished_* metrics. Indien None blijven die op None.
 
     Returns
     -------
@@ -146,10 +155,9 @@ def compute_metrics(df: pd.DataFrame) -> dict:
     if df.empty:
         return _empty_metrics()
 
-    # --- Laatste segment per trein ---
     last_seg = (
         df.sort_values('planned_entry')
-          .groupby(['train_id', 'train_type'])
+          .groupby(['train_id', 'train_type', 'train_subtype'])
           .last()
           .reset_index()
     )
@@ -157,49 +165,19 @@ def compute_metrics(df: pd.DataFrame) -> dict:
     pass_mask    = last_seg['train_type'] == 'P'
     freight_mask = last_seg['train_type'] == 'F'
 
-    # # --- Total End Delay (enkel eindpunt) ---
-    # ted_p = float(last_seg[pass_mask]['entry_delay'].fillna(0.0).sum())
-    # ted_f = float(last_seg[freight_mask]['entry_delay'].fillna(0.0).sum())
+    # --- TED per type (positief geclipt) ---
+    ted_p = float(last_seg[pass_mask]['entry_delay'].clip(lower=0).fillna(0.0).sum())
+    ted_f = float(last_seg[freight_mask]['entry_delay'].clip(lower=0).fillna(0.0).sum())
 
-    # # --- Total Arrival Delay (alle segmenten) ---
-    # tad_p = float(df[df['train_type'] == 'P']['entry_delay'].fillna(0.0).sum())
-    # tad_f = float(df[df['train_type'] == 'F']['entry_delay'].fillna(0.0).sum())
+    # --- TAD per type ---
+    tad_p = float(df[df['train_type'] == 'P']['entry_delay'].clip(lower=0).fillna(0.0).sum())
+    tad_f = float(df[df['train_type'] == 'F']['entry_delay'].clip(lower=0).fillna(0.0).sum())
 
-    # --- Total End Delay (enkel positieve eindvertraging) ---
-    ted_p = float(
-        last_seg[pass_mask]['entry_delay']
-        .clip(lower=0)
-        .fillna(0.0)
-        .sum()
-    )
-
-    ted_f = float(
-        last_seg[freight_mask]['entry_delay']
-        .clip(lower=0)
-        .fillna(0.0)
-        .sum()
-    )
-
-    # --- Total Arrival Delay (enkel positieve vertragingen) ---
-    tad_p = float(
-        df[df['train_type'] == 'P']['entry_delay']
-        .clip(lower=0)
-        .fillna(0.0)
-        .sum()
-    )
-
-    tad_f = float(
-        df[df['train_type'] == 'F']['entry_delay']
-        .clip(lower=0)
-        .fillna(0.0)
-        .sum()
-    )
-
-    # --- Aantallen treinen die eindbestemming bereikten ---
+    # --- Aantallen die eindbestemming bereikten ---
     n_pass    = int(pass_mask.sum())
     n_freight = int(freight_mask.sum())
 
-    # --- Delay Ratio: gemiddelde eindvertraging freight / passenger ---
+    # --- Delay ratio ---
     if n_pass > 0 and n_freight > 0:
         avg_ted_p = ted_p / n_pass
         avg_ted_f = ted_f / n_freight
@@ -207,7 +185,7 @@ def compute_metrics(df: pd.DataFrame) -> dict:
     else:
         delay_ratio = None
 
-    return {
+    metrics = {
         'TED_passenger': ted_p,
         'TED_freight':   ted_f,
         'TED_combined':  ted_p + ted_f,
@@ -219,10 +197,40 @@ def compute_metrics(df: pd.DataFrame) -> dict:
         'n_freight':     n_freight,
     }
 
+    # --- Per-subtype TED + counts ---
+    finished_per_subtype: dict[str, int] = {}
+    for st in _ALL_SUBTYPES:
+        mask = last_seg['train_subtype'] == st
+        ted_st = float(last_seg[mask]['entry_delay'].clip(lower=0).fillna(0.0).sum())
+        n_st   = int(mask.sum())
+        metrics[f'TED_{st}'] = ted_st
+        metrics[f'n_{st}']   = n_st
+        finished_per_subtype[st] = n_st
+
+    # --- Niet-gefinishte treinen ---
+    if trains is not None:
+        total_per_subtype: dict[str, int] = {st: 0 for st in _ALL_SUBTYPES}
+        for t in trains.values():
+            st = t.train_subtype.value
+            if st in total_per_subtype:
+                total_per_subtype[st] += 1
+        n_unfinished_total = 0
+        for st in _ALL_SUBTYPES:
+            unf = total_per_subtype[st] - finished_per_subtype.get(st, 0)
+            metrics[f'n_unfinished_{st}'] = unf
+            n_unfinished_total += unf
+        metrics['n_unfinished_total'] = n_unfinished_total
+    else:
+        for st in _ALL_SUBTYPES:
+            metrics[f'n_unfinished_{st}'] = None
+        metrics['n_unfinished_total'] = None
+
+    return metrics
+
 
 def _empty_metrics() -> dict:
     """Retourneert lege metrics als de simulatie geen data produceerde."""
-    return {
+    base = {
         'TED_passenger': None,
         'TED_freight':   None,
         'TED_combined':  None,
@@ -232,7 +240,13 @@ def _empty_metrics() -> dict:
         'delay_ratio':   None,
         'n_passenger':   0,
         'n_freight':     0,
+        'n_unfinished_total': None,
     }
+    for st in _ALL_SUBTYPES:
+        base[f'TED_{st}']            = None
+        base[f'n_{st}']              = 0
+        base[f'n_unfinished_{st}']   = None
+    return base
 
 
 # =============================================================================
@@ -254,6 +268,7 @@ def build_result_row(
     priority:           str          = 'no_priority',
     weight_passenger:   int          = 1,
     weight_freight:     int          = 1,
+    subtype_weights:    dict | None  = None,
     gamma:              float | None = None,
     upgrade:            int   | None = None,
     # --- Objective ---
@@ -270,12 +285,12 @@ def build_result_row(
     meta['deadlock_detected']. Bij een deadlock-run zijn alle metric-waarden
     None — de kolomvolgorde blijft consistent zodat CSV-append correct werkt.
     """
-    ctrl             = meta.get('controller_summary', {})
-    deadlock         = meta.get('deadlock_detected', False)
+    ctrl     = meta.get('controller_summary', {})
+    deadlock = meta.get('deadlock_detected', False)
 
-    # Metrics altijd via _empty_metrics() als deadlock, anders via argument.
-    # Dit garandeert dat de kolomvolgorde identiek is voor elke rij.
     safe_metrics = _empty_metrics() if deadlock else metrics
+
+    sw = subtype_weights or {}
 
     row = {
         # --- Identificatie ---
@@ -296,6 +311,9 @@ def build_result_row(
         'gamma':              gamma,
         'upgrade':            upgrade,
 
+        # --- Subtype weights (config) ---
+        **{f'w_{st}': sw.get(st) for st in _ALL_SUBTYPES},
+
         # --- Objective ---
         'objective':          objective,
 
@@ -312,10 +330,9 @@ def build_result_row(
         'infeasible_run':     ctrl.get('n_fcfs_fallback', 0) > 0,
 
         # --- Deadlock markering ---
-        # True = run incomplete wegens deadlock, uitgesloten van aggregatie.
         'deadlock':           deadlock,
 
-        # --- Metrics (altijd in vaste volgorde) ---
+        # --- Metrics: type-niveau ---
         'TED_passenger':      safe_metrics.get('TED_passenger'),
         'TED_freight':        safe_metrics.get('TED_freight'),
         'TED_combined':       safe_metrics.get('TED_combined'),
@@ -325,6 +342,12 @@ def build_result_row(
         'delay_ratio':        safe_metrics.get('delay_ratio'),
         'n_passenger':        safe_metrics.get('n_passenger'),
         'n_freight':          safe_metrics.get('n_freight'),
+
+        # --- Metrics: per subtype ---
+        **{f'TED_{st}':           safe_metrics.get(f'TED_{st}')           for st in _ALL_SUBTYPES},
+        **{f'n_{st}':             safe_metrics.get(f'n_{st}')             for st in _ALL_SUBTYPES},
+        **{f'n_unfinished_{st}':  safe_metrics.get(f'n_unfinished_{st}')  for st in _ALL_SUBTYPES},
+        'n_unfinished_total':     safe_metrics.get('n_unfinished_total'),
     }
 
     return row

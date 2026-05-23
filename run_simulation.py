@@ -43,6 +43,8 @@ from data.loader           import load_all
 from controller.controller import Controller
 from controller.triggers   import make_trigger
 from simulation.simulator  import Simulator, DeadlockDetected
+from utils.metrics import compute_metrics
+
 
 
 # =============================================================================
@@ -157,6 +159,10 @@ def _build_config_name(params):
             f"_tc{params['threshold_confidence']}"
             f"_mc{int(params['mc_delay_per_train'])}"
         )
+    sw = params.get('subtype_weights') or {}
+    if sw:
+        sw_str = "_".join(f"{k}{int(v)}" for k, v in sorted(sw.items()))
+        base += f"_sw[{sw_str}]"
 
     return base
 
@@ -203,11 +209,15 @@ def run_simulation(
     objective_strategy:   str   = "static",
     weight_passenger:     int   = 1,
     weight_freight:       int   = 1,
+    subtype_weights:      dict | None = None,
     upgrade_weight:       int   = 10,
     dynamic_threshold:    float = 180,
 
     # Reproduceerbaarheid
     seed:                 int   = settings.SIMULATION_SEED,
+
+   # Solver duration
+    duration_statistic:   str   = settings.SOLVER_DURATION_STATISTIC,
 
     # Dispatcher
     strict_order:         bool  = False, #!!!
@@ -252,6 +262,7 @@ def run_simulation(
         upgrade_weight       = upgrade_weight,
         mc_delay_per_train   = mc_delay_per_train,
         dynamic_threshold    = dynamic_threshold,
+        duration_statistic   = duration_statistic,
         seed                 = seed,
     )
 
@@ -286,8 +297,10 @@ def run_simulation(
         objective_strategy = objective_strategy,
         weight_passenger   = weight_passenger,
         weight_freight     = weight_freight,
+        subtype_weights    = subtype_weights,
         upgrade_weight     = upgrade_weight,
         gamma              = dynamic_threshold,
+        duration_statistic   = duration_statistic,
     )
 
     # 4. Simulatie uitvoeren
@@ -329,5 +342,19 @@ def run_simulation(
     status = "DEADLOCK" if deadlock_detected else "Done"
     print(f"{status}. {len(df)} rows, {df['train_id'].nunique()} trains.")
     print(f"Controller: {controller_summary}")
+    #!!! nieuw
+    metrics = compute_metrics(df, trains)
+    print(
+        f"TED_combined={metrics['TED_combined']}  "
+        f"TED_P={metrics['TED_passenger']}  TED_F={metrics['TED_freight']}  "
+        f"delay_ratio={metrics['delay_ratio']}"
+    )
+    for st in ['IC','L','S','EURST','ICE','INT','freight']:
+        n_fin   = metrics.get(f'n_{st}', 0)
+        n_unf   = metrics.get(f'n_unfinished_{st}')
+        ted_st  = metrics.get(f'TED_{st}')
+        if n_fin or (n_unf or 0):
+            print(f"  {st:>7}: TED={ted_st}  finished={n_fin}  unfinished={n_unf}")
+    print(f"  unfinished total: {metrics.get('n_unfinished_total')}")
 
     return state, df, meta, config_dir, simulator

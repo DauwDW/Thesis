@@ -2,7 +2,7 @@ import logging
 
 import pandas as pd
 
-from data.timetable import load_gold, add_time_in_seconds
+from data.timetable import load_gold, add_time_in_seconds, assign_platforms
 from data.freight import normalize_to_base_date
 
 
@@ -45,10 +45,15 @@ def combine_timetables(n_freight: int) -> pd.DataFrame:
 
     combined = add_time_in_seconds(combined)
 
+    combined, platform_diagnostics = assign_platforms(combined)
+    logger.info(platform_diagnostics.summary())
+
     combined['PLANNED_ENTRY'] = pd.to_datetime(combined['PLANNED_ENTRY']).dt.round('s')
     combined['PLANNED_EXIT']  = pd.to_datetime(combined['PLANNED_EXIT']).dt.round('s')
     combined['ENTRY_SECONDS'] = combined['ENTRY_SECONDS'].round().astype(int)
     combined['EXIT_SECONDS']  = combined['EXIT_SECONDS'].round().astype(int)
+
+
 
     invalid = combined['EXIT_SECONDS'] < combined['ENTRY_SECONDS']
     if invalid.any():

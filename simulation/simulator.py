@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 # Wanneer de MIP-objective deze waarde overschrijdt, gooit de simulator
 # een DeadlockDetected exception. run_simulation.py vangt deze op en
 # markeert de run als incomplete. Zie thesis §X voor motivatie.
-_DEADLOCK_OBJECTIVE_THRESHOLD = 600000.0
-_DEADLOCK_TIME_LIMIT = 110000
+_DEADLOCK_OBJECTIVE_THRESHOLD = 6000000000.0
+_DEADLOCK_TIME_LIMIT = 150000
 _DEADLOCK_CONSECUTIVE_FAILURES = 3
 
 
@@ -84,6 +84,25 @@ class Simulator:
                     self._handle_ready_to_exit(event)
             else:
                 raise TypeError(type(event))
+                # Eindcontrole: alle treinen moeten hun eindsegment bereikt en verlaten hebben.
+        unfinished = [
+            train_id for train_id in self._trains
+            if not self._state.is_finished(train_id)
+        ]
+        if unfinished:
+            preview = ", ".join(str(t) for t in unfinished[:10])
+            suffix = "" if len(unfinished) <= 10 else f", ... (+{len(unfinished) - 10})"
+            not_started = [t for t in unfinished if not self._state._actual[t]]
+            in_waiting  = {seg: list(w) for seg, w in self._dispatcher._waiting.items() if w}
+            occupied    = {s: o for s, o in self._dispatcher._occupied.items() if o is not None}
+            print(f"[DEADLOCK] niet gestart: {len(not_started)}/{len(unfinished)}")
+            print(f"[DEADLOCK] bezette segmenten op eindtijd: {occupied}")
+            print(f"[DEADLOCK] waiting lists: {sum(len(w) for w in in_waiting.values())} treinen verdeeld over {len(in_waiting)} segmenten")
+            raise DeadlockDetected(
+                f"Event-queue leeg op t={self._state.current_time:.0f}s, maar "
+                f"{len(unfinished)} trein(en) bereikten hun eindsegment niet: "
+                f"[{preview}{suffix}] — vermoedelijke deadlock."
+            )
         return self._state
     
        # ------------------------------------------------------------------
@@ -410,7 +429,7 @@ class Simulator:
                 except KeyError:
                     phys_ready = current_time
 
-                safe_entry = max(mip_dep_curr, current_time, phys_ready)
+                safe_entry = max(mip_dep_curr, current_time, phys_ready)    #!!! heel belangrijk mip_dep_curr misschien uitcommenten
 
                 self._queue.cancel_ready_to_exit(train_id, current_seg)
                 self._queue.push(TrainReadyToExit(
@@ -478,7 +497,7 @@ class Simulator:
 # =============================================================================
 
 from domain.segment import SegmentType
-from reality.sampling import sample_running_time
+from reality.sampling import sample_running_time, seconds_to_period
 
 
 def _is_passing(train, segment) -> bool:
@@ -531,10 +550,4 @@ def sample_duration(train, segment, timetable, entry_time: float, rng) -> float:
     # return timetable.scheduled_exit(train.id, segment.id) - timetable.scheduled_entry(train.id, segment.id)
 
 
-def _seconds_to_period(seconds: float) -> str:
-    hour = (seconds % 86400) / 3600
-    if hour < 6:    return "NIGHT"
-    if hour < 9:    return "MORNING PEAK"
-    if hour < 16:   return "DAYTIME"
-    if hour < 19:   return "EVENING PEAK"
-    return "EVENING"
+_seconds_to_period = seconds_to_period

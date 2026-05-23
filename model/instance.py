@@ -28,11 +28,12 @@ from config.settings import (
     DELTA_MAX,
     RESCHEDULING_HORIZON,
     CONFLICT_WINDOW,
+    SOLVER_DURATION_STATISTIC
 )
 
 from domain.segment import SegmentType
 from domain.train import TrainType
-
+from reality.sampling import running_time_statistic, seconds_to_period
 
 # ============================================================================
 # Helpers
@@ -77,6 +78,8 @@ def build_instance(
     weight_freight,
     upgrade_weight,
     gamma,
+    duration_statistic = SOLVER_DURATION_STATISTIC,
+    subtype_weights=None,
 ):
     if priority_strategy not in ("static", "dynamic"):
         raise ValueError(
@@ -115,27 +118,27 @@ def build_instance(
     Tf = [t.id for t in relevant if t.train_type == TrainType.FREIGHT]
 
     # Als je het volledige path wil simuleren
-    # path = {
-    #     t.id: tuple(state.remaining_path(t.id))
-    #     for t in relevant
-    # }
+    path = {
+        t.id: tuple(state.remaining_path(t.id))
+        for t in relevant
+    }
 
     # Enkel segmenten die binnen de rescheduling horizon liggen
 
-    path = {}
-    for train in relevant:# Loop over every train that was selected in STEP 1
-        current_delay = state.current_delay(train.id)
-        truncated = [] #Initialize an empty list that will hold the segments to include for this train
-        for seg in state.remaining_path(train.id):
-            mip_entry = state.mip_entry_for(train.id, seg)
-            if mip_entry is not None:
-                expected = mip_entry
-            else:
-                expected = timetable.scheduled_entry(train.id, seg) + current_delay
-            truncated.append(seg)
-            if expected > horizon_end:
-                break
-        path[train.id] = tuple(truncated)
+    # path = {}
+    # for train in relevant:# Loop over every train that was selected in STEP 1
+    #     current_delay = state.current_delay(train.id)
+    #     truncated = [] #Initialize an empty list that will hold the segments to include for this train
+    #     for seg in state.remaining_path(train.id):
+    #         mip_entry = state.mip_entry_for(train.id, seg)
+    #         if mip_entry is not None:
+    #             expected = mip_entry
+    #         else:
+    #             expected = timetable.scheduled_entry(train.id, seg) + current_delay
+    #         truncated.append(seg)
+    #         if expected > horizon_end:
+    #             break
+    #     path[train.id] = tuple(truncated)       # zou je hier niet achterstevoren werken?
     
 
     S  = sorted({s for t in T for s in path[t]})
@@ -157,9 +160,34 @@ def build_instance(
             sched_exit[(train.id, seg)]  = timetable.scheduled_exit(train.id, seg)
 
             if seg in Sl:
+                if duration_statistic != "scheduled":
+                    empirical = running_time_statistic(
+                        section=seg,
+                        train_type=train.train_subtype.value,
+                        dynamics=train.dynamics_at(seg),
+                        period=seconds_to_period(sched_entry[(train.id, seg)]),
+                        statistic=duration_statistic,
+                    )
+                    runtime[(train.id, seg)] = (
+                        empirical if empirical is not None
+                        else timetable.running_time(train.id, seg)
+                    )
+                else:
+                    runtime[(train.id, seg)] = timetable.running_time(train.id, seg)
                 runtime[(train.id, seg)] = timetable.running_time(train.id, seg)
             if seg in Ss:
                 dwell[(train.id, seg)] = timetable.dwell_time(train.id, seg)    # !!! check of dwell_time dezelfde waarde geeft als de simulator gebruikt voor dwell segmets
+
+
+            #deterministische dwells!!!!
+            # if seg in Ss:
+                # if train.halts_at(seg):
+                #     entry_sec = sched_entry[(train.id, seg)]
+                #     hour = (entry_sec % 86400) / 3600
+                #     is_peak = 6 <= hour < 9 or 16 <= hour < 19
+                #     dwell[(train.id, seg)] = 120 if is_peak else 60
+                # else:
+                #     dwell[(train.id, seg)] = 1
 
     halts = {
         (train.id, seg): train.halts_at(seg)
@@ -279,7 +307,11 @@ def build_instance(
     n_upgraded = 0
 
     for train in relevant:
-        if train.train_type == TrainType.PASSENGER:
+        st = train.train_subtype.value
+
+        if subtype_weights and st in subtype_weights:
+            base = subtype_weights[st]
+        elif train.train_type == TrainType.PASSENGER:
             base = weight_passenger
         else:
             base = weight_freight

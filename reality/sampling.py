@@ -28,7 +28,7 @@ from data.running_distributions import _load
 logger = logging.getLogger(__name__)
 
 PASSING_DURATION   = 1.0
-FREIGHT_POOL_TYPES = ("IC", "L")
+FREIGHT_POOL_TYPES = ("IC", "L", "S")
 
 
 def _pool_samples(
@@ -131,3 +131,56 @@ def sample_running_time(
         return None
 
     return float(rng.choice(samples)) * scale
+
+#!!! deterministic times: 
+def seconds_to_period(seconds: float) -> str:
+    hour = (seconds % 86400) / 3600
+    if hour < 6:    return "NIGHT"
+    if hour < 9:    return "MORNING PEAK"
+    if hour < 16:   return "DAYTIME"
+    if hour < 19:   return "EVENING PEAK"
+    return "EVENING"
+
+
+def running_time_statistic(
+    section:    str,
+    train_type: str,
+    dynamics:   str,
+    period:     str,
+    statistic:  str = "median",
+) -> float | None:
+    """
+    Berekent een aggregaatstatistiek (mediaan/mean/P75) van de empirische
+    rijtijdverdeling. Gebruikt dezelfde fallback-hiërarchie als sample_running_time.
+
+    Returns None als geen data beschikbaar — caller valt terug op geplande rijtijd.
+    """
+    data = _load()
+    if not data:
+        return None
+
+    if train_type == "freight":
+        pool_types = FREIGHT_POOL_TYPES
+        scale      = FREIGHT_RUNNING_TIME_SCALE
+    else:
+        pool_types = (train_type,)
+        scale      = 1.0
+
+    samples = _pool_samples(data, section, pool_types, dynamics, period)
+    if samples is None:
+        return None
+
+    if statistic == "median":
+        value = float(np.median(samples))
+    elif statistic == "mean":
+        value = float(np.mean(samples))
+    elif statistic == "p25":
+        value = float(np.percentile(samples, 25))
+    else:
+        raise ValueError(
+            f"Onbekende statistic: '{statistic}'. "
+            f"Kies uit: 'median', 'mean', 'p75'."
+        )
+
+    return value * scale
+

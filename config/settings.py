@@ -23,7 +23,6 @@ GOLD_DIR          = Path("/Users/ddw/Desktop/Rescheduling/data/gold")
 # Simulatie
 # =============================================================================
 SIMULATION_SEED = 42
-DISPATCHER_POLL_INTERVAL = 10.0
 
 # =============================================================================
 # Freight sampling
@@ -36,6 +35,7 @@ PASSING_DURATION_FREIGHT   = 1  # seconden
 # =============================================================================
 # MIP model
 # =============================================================================
+SOLVER_DURATION_STATISTIC = "scheduled"  # "scheduled", "median", "mean", "p75"
 
 
 GAMMA     = 120    # vertragingsdrempel γ (s)
@@ -44,10 +44,10 @@ DELTA_MAX = 86400  # maximale vertraging (s)
 L         = 86400  # big-M
 
 SOLVER_TIMEOUT_SECONDS = 60
-SOLVER_MIP_GAP         = 0.001
+SOLVER_MIP_GAP         = 0.00000001
 
-RESCHEDULING_HORIZON = 7200
-CONFLICT_WINDOW = 1800 
+RESCHEDULING_HORIZON = 7200 # normaal 7200
+CONFLICT_WINDOW = 1800 # normaal 1200
 
 # =============================================================================
 # Monte Carlo trigger

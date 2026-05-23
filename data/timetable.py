@@ -261,7 +261,7 @@ def add_dynamics(df: pd.DataFrame) -> pd.DataFrame:
     df['NEXT_TYPE']     = df.groupby('TRAIN_NO')['TYPE'].shift(-1)
 
     df['ACCELERATION'] = ~df['PREVIOUS_TYPE'].isin(
-        ['BETWEEN-STATION', 'WITHIN-STATION-PASSING']
+        ['BETWEEN-STATION', 'WITHIN-STATION-PASSING']       # is dit niet hetzelfde als df['PREVIOUS_TYPE].isin['WITHIN-STATION-DWELL']
     )
     df['BREAKING'] = df['NEXT_TYPE'].isin(['WITHIN-STATION-DWELL'])
 
@@ -330,59 +330,55 @@ def _assign_tracks_by_overlap(
 ) -> None:
     """
     Wijst individuele platforms toe binnen één eilandperron via greedy
-    interval scheduling op basis van [ENTRY_SECONDS, EXIT_SECONDS].
+    interval scheduling (klassiek 'earliest-available machine first').
     Modifieert df['PERRON'] in-place.
 
-    Greedy strategie: kies platform dat het vroegst vrijkomt (minimale
-    overlap). Bij capaciteitstekort: kies platform met kortste overlap
-    en log het conflict.
-
-    Tijdsconventie: ENTRY_SECONDS < EXIT_SECONDS altijd.
-    Ongeldig interval: EXIT_SECONDS <= ENTRY_SECONDS.
+    Volgorde: treinen op ENTRY_SECONDS oplopend, met TRAIN_NO als
+    deterministische tiebreak. Per trein wordt het platform gekozen
+    dat het vroegst vrijkomt; bij gelijkstand alfabetisch eerste.
+    Als dat platform nog bezet is op moment van aankomst, wordt het
+    conflict gelogd en de trein krijgt alsnog het minst-bezette spoor.
     """
-    groep_mask = mask & (df['PERRON_GROEP'] == perron_groep)
-    groep_idx  = df.index[groep_mask]
-
-    if groep_idx.empty:
-        return
-
+    groep_mask   = mask & (df['PERRON_GROEP'] == perron_groep)
     invalid_mask = groep_mask & (df['EXIT_SECONDS'] <= df['ENTRY_SECONDS'])
-    n_invalid = invalid_mask.sum()
+    n_invalid    = invalid_mask.sum()
+
     if n_invalid > 0:
         diagnostics.log_invalid(station, perron_groep, n_invalid)
         logger.warning(
             f"{station} ({perron_groep}): {n_invalid} ongeldige intervallen "
             f"(EXIT_SECONDS <= ENTRY_SECONDS) — worden overgeslagen"
         )
-        groep_idx = df.index[groep_mask & ~invalid_mask]
 
-    if groep_idx.empty:
+    work_mask = groep_mask & ~invalid_mask
+    if not work_mask.any():
         return
 
-    sorted_idx = groep_idx[df.loc[groep_idx, 'ENTRY_SECONDS'].argsort()]
-    platform_vrij_vanaf = {p: -1 for p in platforms}
+    sorted_idx = (
+        df.loc[work_mask, ['ENTRY_SECONDS', 'TRAIN_NO']]
+          .sort_values(['ENTRY_SECONDS', 'TRAIN_NO'])
+          .index
+    )
+    free_from = {p: -1 for p in sorted(platforms)}
 
     for idx in sorted_idx:
         entry = df.at[idx, 'ENTRY_SECONDS']
         exit_ = df.at[idx, 'EXIT_SECONDS']
         diagnostics.log_assignment(station, perron_groep)
 
-        vroegst_vrij = min(platform_vrij_vanaf, key=platform_vrij_vanaf.get)
+        chosen = min(free_from, key=lambda p: (free_from[p], p))
 
-        if platform_vrij_vanaf[vroegst_vrij] <= entry:
-            df.at[idx, 'PERRON'] = vroegst_vrij
-            platform_vrij_vanaf[vroegst_vrij] = exit_
-        else:
-            best_platform = min(platform_vrij_vanaf, key=platform_vrij_vanaf.get)
-            overlap = platform_vrij_vanaf[best_platform] - entry
-            df.at[idx, 'PERRON'] = best_platform
-            platform_vrij_vanaf[best_platform] = exit_
+        if free_from[chosen] > entry:
+            overlap = free_from[chosen] - entry
             diagnostics.log_conflict(station, perron_groep)
             logger.debug(
                 f"{station} ({perron_groep}): capaciteitsconflict op "
-                f"{best_platform} — overlap van {overlap:.0f}s"
+                f"{chosen} — overlap van {overlap:.0f}s"
             )
 
+        df.at[idx, 'PERRON']  = chosen
+        free_from[chosen]     = exit_
+        
 
 def assign_platforms(
     df: pd.DataFrame,

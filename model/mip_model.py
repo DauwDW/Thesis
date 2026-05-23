@@ -47,13 +47,12 @@ def build_and_solve_model(
     verbose=True,
 ):
     
-    DWELL_SLACK = 3600 # Deze constraint is wss overbodig !!!
     model = gp.Model("rail_rescheduling")
     #Debug
     model.Params.OutputFlag = 0
     # small_alpha = 0.00001
-    model.Params.MIPGap = SOLVER_MIP_GAP
-    epsilon = 0.000001
+    # model.Params.MIPGap = SOLVER_MIP_GAP
+    # epsilon = 0.000000001
 
 
     if not verbose:
@@ -127,6 +126,7 @@ def build_and_solve_model(
     # =========================================================================
 
     model.setObjective(
+
         gp.quicksum(
             weights[t] * delay[t, final_segment[t]]
             for t in T
@@ -158,7 +158,7 @@ def build_and_solve_model(
                     name=f"C1_occupation[{t},{s}]",
                 )
             else:
-                duration = runtime[(t, s)] if s in Sl else dwell[(t, s)]
+                duration = runtime[(t, s)] if s in Sl else dwell[(t, s)] 
                 model.addConstr(
                     dep[t, s] >= entry[t, s] + duration,
                     name=f"C1_occupation[{t},{s}]",
@@ -201,7 +201,7 @@ def build_and_solve_model(
     for t in T:
         for s in path[t]:
             model.addConstr(
-                delay[t, s] >= entry[t, s] - sched_entry[(t, s)],
+                delay[t, s] >= dep[t, s] - sched_exit[(t, s)],
                 name=f"C3_delay[{t},{s}]",
             )
 
@@ -234,24 +234,6 @@ def build_and_solve_model(
                     name=f"C5_mindwell[{t},{s}]",
                 )
     
-    # # =========================================================================
-    # # C6 — Maximum dwell
-    # # Voorkom dat dwell-segmenten als wachtbuffer gebruikt worden
-    # # =========================================================================
-
-    for t in T:
-        for s in path[t]:
-
-            if halts.get((t, s), False):
-
-                planned_dwell = dwell[(t, s)]
-
-                model.addConstr(
-                    dep[t, s] - entry[t, s]
-                    <= planned_dwell + DWELL_SLACK,
-                    name=f"C6_maxdwell[{t},{s}]",
-                )
-
 
     # =========================================================================
     # Warm start

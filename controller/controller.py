@@ -61,6 +61,8 @@ class Controller:
         weight_freight,
         upgrade_weight,
         gamma,
+        duration_statistic:"scheduled",
+        subtype_weights=None,
     ) -> None:
 
         self.trigger = trigger
@@ -74,6 +76,9 @@ class Controller:
         self.weight_freight = weight_freight
         self.upgrade_weight = upgrade_weight
         self.gamma = gamma
+        self.duration_statistic = duration_statistic
+
+        self.subtype_weights = subtype_weights
 
         self._solver_runtimes: list[float] = []
 
@@ -120,7 +125,10 @@ class Controller:
             weight_passenger=self.weight_passenger,
             weight_freight=self.weight_freight,
             upgrade_weight=self.upgrade_weight,
+            subtype_weights=self.subtype_weights,
             gamma=self.gamma,
+            duration_statistic=self.duration_statistic,
+
         )
 
         # ---------------------------------------------------------------------
@@ -165,6 +173,11 @@ class Controller:
 
         self._n_fcfs_fallback += 1
         self._consecutive_failures += 1
+        
+        # Reset frequency clock: een mislukte solver-call kost evenveel tijd
+        # als een succesvolle, dus tel ze gelijk voor de trigger.
+        self.trigger.notify_rescheduled(current_time, state)
+
 
 
         return ControllerResult(
