@@ -263,6 +263,7 @@ def run_simulation(
         objective_strategy        = objective_strategy,
         weight_passenger          = weight_passenger,
         weight_freight            = weight_freight,
+        subtype_weights           = subtype_weights,
         upgrade_weight            = upgrade_weight,
         mc_delay_per_train        = mc_delay_per_train,
         dynamic_threshold         = dynamic_threshold,
