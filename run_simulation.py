@@ -176,6 +176,9 @@ def _build_config_name(params):
         sw_str = "_".join(f"{k}{int(v)}" for k, v in sorted(sw.items()))
         base += f"_sw[{sw_str}]"
 
+    if not params.get('use_retracking', True):
+        base += "_nort"
+
     return base
 
 
@@ -235,6 +238,9 @@ def run_simulation(
     # FCFS-baseline om de MIP-oplossing toe te passen. 0.0 = uitgeschakeld.
     min_objective_improvement: float = 0.0,
 
+    # Retracking
+    use_retracking:       bool  = True,
+
     # Dispatcher
     queue_mode:           str   = "fsfs",
 
@@ -254,6 +260,9 @@ def run_simulation(
     weight_freight     : base weight voor goederentreinen
     upgrade_weight     : extra penalty (alleen actief bij dynamic)
     dynamic_threshold  : gamma — delay-drempel (s) voor upgrade
+    use_retracking     : True (default) → solver mag platforms wisselen
+                         False → platform_alternatives={} (uitgeschakeld)
+                         Config-naam krijgt suffix '_nort' als False.
 
     Returns
     -------
@@ -281,6 +290,7 @@ def run_simulation(
         dynamic_threshold         = dynamic_threshold,
         duration_statistic        = duration_statistic,
         min_objective_improvement = min_objective_improvement,
+        use_retracking            = use_retracking,
         seed                      = seed,
     )
 
@@ -290,6 +300,8 @@ def run_simulation(
     # 1. Data laden
     print("Loading data...")
     trains, segments, timetable, platform_alternatives = load_all(n_freight)
+    if not use_retracking:
+        platform_alternatives = {}
 
     # 2. Trigger bouwen
     print(f"Building controller (trigger={trigger_strategy}, objective={objective_strategy})...")
