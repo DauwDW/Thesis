@@ -272,11 +272,12 @@ def build_result_row(
     gamma:              float | None = None,
     upgrade:            int   | None = None,
     # --- Objective ---
-    objective:          str          = 'final_delay',
+    objective:                str          = 'final_delay',
+    min_objective_improvement: float       = 0.0,
     # --- Vaste parameters ---
-    freight_pct:        float        = 0.15,
-    mc_delay_per_train: float        = 10.0,
-    solver_timeout:     int          = 60,
+    freight_pct:              float        = 0.15,
+    mc_delay_per_train:       float        = 10.0,
+    solver_timeout:           int          = 60,
 ) -> dict:
     """
     Bouwt één volledige resultatenrij op voor opslag in raw_runs.csv.
@@ -315,7 +316,8 @@ def build_result_row(
         **{f'w_{st}': sw.get(st) for st in _ALL_SUBTYPES},
 
         # --- Objective ---
-        'objective':          objective,
+        'objective':                   objective,
+        'min_objective_improvement':   min_objective_improvement,
 
         # --- Vaste parameters ---
         'freight_pct':        freight_pct,
