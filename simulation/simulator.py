@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # markeert de run als incomplete. Zie thesis §X voor motivatie.
 _DEADLOCK_OBJECTIVE_THRESHOLD = 6000000000.0
 _DEADLOCK_TIME_LIMIT = 150000
-_DEADLOCK_CONSECUTIVE_FAILURES = 3
+_DEADLOCK_CONSECUTIVE_FAILURES = 2
 
 
 class DeadlockDetected(RuntimeError):
@@ -50,7 +50,7 @@ class Simulator:
       op mip_entry uit SystemState, met FIFO als fallback.
     """
 #!!!!! verwijder hierna strict_order
-    def __init__(self, trains, segments, timetable, controller, seed=None, strict_order: bool = False):
+    def __init__(self, trains, segments, timetable, controller, seed=None, queue_mode: str = "fsfs"):
         self._trains = trains
         self._segments = segments
         self._timetable = timetable
@@ -58,7 +58,7 @@ class Simulator:
         self._rng = np.random.default_rng(seed)
         self._state = SystemState(trains=trains, timetable=timetable, start_time=0.0)
         self._queue = EventQueue()
-        self._dispatcher = Dispatcher(timetable=timetable, segments=segments, trains=trains, strict_order=strict_order)
+        self._dispatcher = Dispatcher(timetable=timetable, segments=segments, trains=trains, queue_mode=queue_mode)
         self._solutions = []
 
     # ------------------------------------------------------------------
@@ -314,7 +314,7 @@ class Simulator:
         via een TrainEntered-event. We pushen het juiste event-type op
         current_time, zodat de wachter onmiddellijk opnieuw request_entry doet.
         """
-        next_id = self._dispatcher.next_waiter(segment_id, state=self._state)
+        next_id = self._dispatcher.next_waiter(segment_id, state=self._state, current_time=current_time)
         if next_id is None:
             return
 
@@ -347,6 +347,7 @@ class Simulator:
                 )
             self._solutions.append(result.solution)
             self._apply_solution(result.solution)
+            self._dispatcher.notify_reschedule(self._state.current_time)
 
         if self._controller.consecutive_failures >= _DEADLOCK_CONSECUTIVE_FAILURES:
             raise DeadlockDetected(
@@ -410,7 +411,8 @@ class Simulator:
                 if mip_entry is None:
                     continue
 
-                safe_entry = max(mip_entry, current_time)
+                sched_entry_first = self._timetable.scheduled_entry(train_id, first_seg)
+                safe_entry = max(mip_entry, current_time, sched_entry_first)
                 self._queue.cancel_train_entered(train_id, first_seg)
                 self._queue.push(TrainEntered(
                     time=safe_entry, train_id=train_id, segment_id=first_seg,

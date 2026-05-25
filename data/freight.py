@@ -3,7 +3,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from config.settings import PASSING_DURATION_FREIGHT, FREIGHT_RUNNING_TIME_SCALE
+from config.settings import PASSING_DURATION_FREIGHT, FREIGHT_RUNNING_TIME_SCALE, FREIGHT_POOL_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -71,21 +71,27 @@ DEFAULT_RELAXATION_LEVELS:      tuple[int, ...] = (0, 1, 2)
 BASE_DATE = pd.Timestamp("2025-01-01")
 
 # =============================================================================
-# Fallback rijtijden en lijncodes voor secties zonder passenger data
+# Fallback voor freight-only goederenlijnen zonder passenger data
+#
+# Lijnen 26 en 28 zijn freight-only — er rijden per definitie geen
+# passagierstreinen, dus geen data-gedreven mediaan mogelijk. Schatting
+# komt uit infrastructuurkennis (lengte + maximumsnelheid voor freight).
 # =============================================================================
-
-_FALLBACK_PASSENGER_RUNNING_TIMES: dict[tuple[str, str], float] = {
-    ('SCHAARBEEK',      'THURN EN TAXIS'):  318,
-    ('THURN EN TAXIS',  'SCHAARBEEK'):      318,
-    ('SCHAARBEEK',      'BRUSSEL-SCHUMAN'): 431,
-    ('BRUSSEL-SCHUMAN', 'SCHAARBEEK'):      431,
-}
 
 _FALLBACK_LINE_NOS: dict[tuple[str, str], str] = {
     ('SCHAARBEEK',      'THURN EN TAXIS'):  '28',
     ('THURN EN TAXIS',  'SCHAARBEEK'):      '28',
     ('SCHAARBEEK',      'BRUSSEL-SCHUMAN'): '26',
     ('BRUSSEL-SCHUMAN', 'SCHAARBEEK'):      '26',
+}
+
+# Rijtijden in seconden voor freight-only lijnen — al inclusief freight-snelheid,
+# wordt NIET met FREIGHT_RUNNING_TIME_SCALE vermenigvuldigd in de lookup.
+_FREIGHT_ONLY_RUNNING_TIMES: dict[str, float] = {
+    '28:SCHAARBEEK-THURN EN TAXIS':  318 *FREIGHT_RUNNING_TIME_SCALE,
+    '28:THURN EN TAXIS-SCHAARBEEK':  318 *FREIGHT_RUNNING_TIME_SCALE,
+    '26:SCHAARBEEK-BRUSSEL-SCHUMAN': 431 *FREIGHT_RUNNING_TIME_SCALE,
+    '26:BRUSSEL-SCHUMAN-SCHAARBEEK': 431 *FREIGHT_RUNNING_TIME_SCALE,
 }
 
 # =============================================================================
@@ -109,26 +115,128 @@ def build_line_no_lookup(passenger_df: pd.DataFrame) -> dict[tuple[str, str], st
     ) | _FALLBACK_LINE_NOS
 
 
-def build_running_time_lookup(passenger_df: pd.DataFrame) -> dict[tuple[str, str], float]:
+def _hour_to_period(hour: int) -> str:
+    """Zet een uur (0-23) om naar een dagperiode-label."""
+    if hour < 6:  return "NIGHT"
+    if hour < 9:  return "MORNING PEAK"
+    if hour < 16: return "DAYTIME"
+    if hour < 19: return "EVENING PEAK"
+    return "EVENING"
+
+
+def build_running_time_lookup(passenger_df: pd.DataFrame) -> dict:
     """
-    Berekent de mediane geplande rijtijd (seconden) per (SOURCE, TARGET) uit passenger data.
-    Freight running time = mediane passenger rijtijd x 1.3.
+    Berekent mediane geplande rijtijden (seconden × FREIGHT_RUNNING_TIME_SCALE),
+    gegroepeerd per SECTION (lijncode + stations) zoals in reality/sampling.py.
+
+    Poolt enkel over FREIGHT_POOL_TYPES (IC, L, S) — geen Eurostar/ICE/INT.
+
+    Fallback-hiërarchie:
+      l1: (SECTION, PERIOD)         — specifieke lijn + periode
+      l2: (SECTION)                 — specifieke lijn, alle periodes
+      l3: (SOURCE, TARGET, PERIOD)  — alle lijnen, specifieke periode
+      l4: (SOURCE, TARGET)          — alle lijnen, alle periodes
     """
     between = passenger_df[passenger_df['SOURCE'] != passenger_df['TARGET']].copy()
+
+    # Filter op trage treintypen — consistent met FREIGHT_POOL_TYPES in sampling.py
+    if 'TRAIN_TYPE' in between.columns:
+        between = between[between['TRAIN_TYPE'].isin(FREIGHT_POOL_TYPES)]
+
     between['PLANNED_ENTRY'] = pd.to_datetime(between['PLANNED_ENTRY'])
     between['PLANNED_EXIT']  = pd.to_datetime(between['PLANNED_EXIT'])
     between['RUNNING_TIME_SEC'] = (
         between['PLANNED_EXIT'] - between['PLANNED_ENTRY']
     ).dt.total_seconds()
-
     between = between[between['RUNNING_TIME_SEC'] > 0]
 
-    return (
+    # Periode afleiden uit entry-uur
+    between['PERIOD'] = between['PLANNED_ENTRY'].dt.hour.apply(_hour_to_period)
+
+    # Niveau 1: (SECTION, PERIOD) — meest specifiek
+    l1 = (
+        between.groupby(['SECTION', 'PERIOD'])['RUNNING_TIME_SEC']
+        .median()
+        .mul(FREIGHT_RUNNING_TIME_SCALE)
+        .to_dict()
+    )
+
+    # Niveau 2: (SECTION) — alle periodes gepoold
+    l2 = (
+        between.groupby('SECTION')['RUNNING_TIME_SEC']
+        .median()
+        .mul(FREIGHT_RUNNING_TIME_SCALE)
+        .to_dict()
+    )
+
+    # Niveau 3: (SOURCE, TARGET, PERIOD) — andere lijnen tussen zelfde stations
+    l3 = (
+        between.groupby(['SOURCE', 'TARGET', 'PERIOD'])['RUNNING_TIME_SEC']
+        .median()
+        .mul(FREIGHT_RUNNING_TIME_SCALE)
+        .to_dict()
+    )
+
+    # Niveau 4: (SOURCE, TARGET) — laatste vangnet
+    l4 = (
         between.groupby(['SOURCE', 'TARGET'])['RUNNING_TIME_SEC']
         .median()
         .mul(FREIGHT_RUNNING_TIME_SCALE)
         .to_dict()
-    ) | {k: v * FREIGHT_RUNNING_TIME_SCALE for k, v in _FALLBACK_PASSENGER_RUNNING_TIMES.items()}
+    )
+
+    return {"l1": l1, "l2": l2, "l3": l3, "l4": l4}
+
+
+def get_running_time(
+    lookup:  dict,
+    section: str,
+    source:  str,
+    target:  str,
+    period:  str | None = None,
+) -> float | None:
+    """
+    Zoekt de freight rijtijd op via de fallback-hiërarchie:
+      1. (SECTION, PERIOD)                 — data-gedreven
+      2. (SECTION)                         — data-gedreven
+      3. (SOURCE, TARGET, PERIOD)          — data-gedreven
+      4. (SOURCE, TARGET)                  — data-gedreven
+      5. _FREIGHT_ONLY_RUNNING_TIMES       — hardcoded, enkel freight-only lijnen
+      6. None — niets gevonden, error gelogd
+
+    Parameters
+    ----------
+    period : str | None
+        Dagperiode (bv. "NIGHT"). Indien None worden l1 en l3 overgeslagen.
+    """
+    if period is not None:
+        v = lookup["l1"].get((section, period))
+        if v is not None:
+            return v
+
+    v = lookup["l2"].get(section)
+    if v is not None:
+        return v
+
+    if period is not None:
+        v = lookup["l3"].get((source, target, period))
+        if v is not None:
+            return v
+
+    v = lookup["l4"].get((source, target))
+    if v is not None:
+        return v
+
+    # Freight-only lijnen: geen passenger data mogelijk, schatting uit infrastructuur
+    v = _FREIGHT_ONLY_RUNNING_TIMES.get(section)
+    if v is not None:
+        return v
+
+    logger.error(
+        f"Geen rijtijd gevonden voor section='{section}', "
+        f"({source} → {target}), period={period} — geen fallback beschikbaar"
+    )
+    return None
 
 
 # =============================================================================
@@ -435,17 +543,23 @@ def generate_freight_timetable(
 
         first_source, first_target = segments[0]
         first_line_no  = line_no_lookup.get((first_source, first_target))
-        first_duration = running_time_lookup.get((first_source, first_target))
 
         if first_line_no is None:
             logger.warning(
                 f"Trein {train_id}: geen lijncode voor ({first_source}, {first_target}) — overgeslagen"
             )
             n_skipped_lookup += 1
+            continue
+
+        first_section = f"{first_line_no}:{first_source}-{first_target}"
+        # Periode nog onbekend bij pending-check → l1/l3 worden overgeslagen
+        first_duration = get_running_time(
+            running_time_lookup, first_section, first_source, first_target
+        )
 
         if first_duration is None:
             logger.warning(
-                f"Trein {train_id}: geen rijtijd voor ({first_source}, {first_target}) — overgeslagen"
+                f"Trein {train_id}: geen rijtijd voor {first_section} — overgeslagen"
             )
             n_skipped_lookup += 1
             continue
@@ -454,7 +568,7 @@ def generate_freight_timetable(
             "train_id":      train_id,
             "traject_key":   traject_key,
             "segments":      segments,
-            "first_section": f"{first_line_no}:{first_source}-{first_target}",
+            "first_section": first_section,
             "first_duration": first_duration,
         })
             # --- Globale plaatsing via versoepelingstrap ---
@@ -490,13 +604,22 @@ def generate_freight_timetable(
         n_placed_this_stage = 0
         for train in pending:
             scheduled = False
+            first_source, first_target = train["segments"][0]
             for _ in range(n_attempts_per_stage):
                 period       = rng.choice(period_keys, p=period_p)
                 desired_time = _sample_time_in_period(rng, period)
+                # Herbereken met de gekozen periode — fallback-hiërarchie intern
+                duration = get_running_time(
+                    running_time_lookup,
+                    train["first_section"],
+                    first_source,
+                    first_target,
+                    period,
+                )
                 departure, feasible = _shift_until_feasible(
                     train["first_section"],
                     desired_time,
-                    train["first_duration"],
+                    duration,
                     period,
                     occupied,
                     max_iter,
@@ -504,7 +627,7 @@ def generate_freight_timetable(
                 )
 
                 if feasible:
-                    arrival = departure + pd.Timedelta(seconds=train["first_duration"])
+                    arrival = departure + pd.Timedelta(seconds=duration)
                     occupied.setdefault(train["first_section"], []).append(
                         (departure, arrival)
                     )
@@ -568,14 +691,16 @@ def generate_freight_timetable(
                 )
                 break
 
-            duration_sec = running_time_lookup.get((source, target))
+            section = f"{line_no}:{source}-{target}"
+            duration_sec = get_running_time(
+                running_time_lookup, section, source, target, train["period"]
+            )
             if duration_sec is None:
                 logger.warning(
-                    f"Trein {train_id}: geen rijtijd voor ({source}, {target}) — traject afgebroken"
-                )                
+                    f"Trein {train_id}: geen rijtijd voor {section} — traject afgebroken"
+                )
                 break
 
-            section = f"{line_no}:{source}-{target}"
             arrival = current_time + pd.Timedelta(seconds=duration_sec)
 
             rows.append({

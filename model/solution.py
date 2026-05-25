@@ -39,7 +39,7 @@ class Solution:
 
     def is_feasible(self) -> bool:
         """True als de solver een haalbare oplossing heeft gevonden."""
-        return self.status in ("optimal")   # timeout weglaten, anders , "timeout" toevoegen
+        return self.status in ("optimal", "timout")   # timeout weglaten, anders , "timeout" toevoegen
 
     def entry_time(self, train_id, segment_id) -> float | None:
         return self.entry.get((train_id, segment_id))

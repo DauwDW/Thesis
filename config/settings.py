@@ -29,6 +29,11 @@ SIMULATION_SEED = 42
 # =============================================================================
 FREIGHT_RUNNING_TIME_SCALE = 1.3  # normaal 1.3
 
+# Treintypen die als referentie dienen voor freight rijtijden.
+# Consistent gebruikt in data/freight.py (timetable-generatie) én
+# reality/sampling.py (simulatie) — wijzig op één plek, geldt overal.
+FREIGHT_POOL_TYPES = ("IC", "L", "S")
+
 PASSING_DURATION_PASSENGER = 1  # seconden
 PASSING_DURATION_FREIGHT   = 1  # seconden
 
@@ -46,8 +51,17 @@ L         = 86400  # big-M
 SOLVER_TIMEOUT_SECONDS = 60
 SOLVER_MIP_GAP         = 0.00000001
 
-RESCHEDULING_HORIZON = 7200 # normaal 7200
+RESCHEDULING_HORIZON = 3600 # normaal 7200
 CONFLICT_WINDOW = 1800 # normaal 1200
+
+# =============================================================================
+# Dispatcher prioriteitsveroudering
+# =============================================================================
+# Na zoveel seconden zonder nieuwe reschedule vervalt de MIP-prioriteit en
+# valt de dispatcher terug op scheduled_entry (timetable-volgorde).
+# Kies een waarde ≥ controller_freq zodat de prioriteit niet veroudert
+# vóór de volgende geplande reschedule.
+DISPATCHER_PRIORITY_TTL: float = 900.0
 
 # =============================================================================
 # Monte Carlo trigger

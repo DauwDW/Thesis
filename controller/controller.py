@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from model.instance import build_instance
 from model.solver import solve
+from model.fcfs import compute_fcfs_objective
 
 
 
@@ -63,6 +64,7 @@ class Controller:
         gamma,
         duration_statistic:"scheduled",
         subtype_weights=None,
+        min_objective_improvement: float = 0.0,
     ) -> None:
 
         self.trigger = trigger
@@ -80,11 +82,17 @@ class Controller:
 
         self.subtype_weights = subtype_weights
 
+        # Drempel: MIP-oplossing wordt enkel toegepast als de objective-
+        # verbetering t.o.v. de FCFS-baseline minstens deze waarde is.
+        # 0.0 (default) = uitgeschakeld: elke feasible oplossing wordt toegepast.
+        self.min_objective_improvement = min_objective_improvement
+
         self._solver_runtimes: list[float] = []
 
         self._n_rescheduled = 0
         self._n_fcfs_fallback = 0
         self._n_skipped = 0
+        self._n_skipped_no_improvement = 0
         self._consecutive_failures = 0
 
     # =========================================================================
@@ -146,6 +154,51 @@ class Controller:
 
         if solution.is_feasible():
             self._consecutive_failures = 0
+
+            # ---------------------------------------------------------
+            # FCFS-vergelijking: skip toepassing als verbetering te klein
+            # ---------------------------------------------------------
+            if self.min_objective_improvement > 0.0:
+                fcfs_objective, fcfs_converged = compute_fcfs_objective(instance)
+                improvement = fcfs_objective - solution.objective
+
+                # Verbetering te klein én FCFS is betrouwbaar → skip.
+                # Als FCFS niet convergeert is de schatting onbetrouwbaar
+                # (complexe conflictsituatie, mogelijk deadlock-risico) →
+                # pas de MIP-oplossing sowieso toe.
+                if improvement < self.min_objective_improvement and fcfs_converged:
+                    self._n_skipped_no_improvement += 1
+                    # Reset trigger-klok: een 'no improvement' kost evenveel tijd
+                    # als een toegepaste reschedule, dus tel beide gelijk.
+                    self.trigger.notify_rescheduled(current_time, state)
+
+                    self._log(
+                        current_time,
+                        "SKIPPED_NO_IMPROVEMENT",
+                        (
+                            f"MIP={solution.objective:.0f}s, "
+                            f"FCFS={fcfs_objective:.0f}s, "
+                            f"improvement={improvement:.0f}s "
+                            f"< threshold={self.min_objective_improvement:.0f}s"
+                        ),
+                    )
+
+                    return ControllerResult(
+                        action="skipped_no_improvement",
+                        runtime=time.time() - start,
+                    )
+
+                if not fcfs_converged:
+                    self._log(
+                        current_time,
+                        "FCFS_NO_CONVERGENCE",
+                        (
+                            f"MIP={solution.objective:.0f}s, "
+                            f"FCFS={fcfs_objective:.0f}s (onbetrouwbaar) — "
+                            f"MIP-oplossing toch toegepast"
+                        ),
+                    )
+
             self.trigger.notify_rescheduled(current_time, state)
 
             self._n_rescheduled += 1
@@ -210,13 +263,19 @@ class Controller:
 
     def summary(self) -> dict:
         return {
-            "n_rescheduled":          self._n_rescheduled,
-            "n_fcfs_fallback":        self._n_fcfs_fallback,
-            "n_skipped":              self._n_skipped,
-            "n_evaluated":            self.trigger.n_evaluated,
-            "total_steps":            self._n_rescheduled + self._n_fcfs_fallback + self._n_skipped,
-            "total_solver_runtime_s": sum(self._solver_runtimes),
-            "max_consecutive_failures":   self._consecutive_failures,
+            "n_rescheduled":            self._n_rescheduled,
+            "n_fcfs_fallback":          self._n_fcfs_fallback,
+            "n_skipped":                self._n_skipped,
+            "n_skipped_no_improvement": self._n_skipped_no_improvement,
+            "n_evaluated":              self.trigger.n_evaluated,
+            "total_steps": (
+                self._n_rescheduled
+                + self._n_fcfs_fallback
+                + self._n_skipped
+                + self._n_skipped_no_improvement
+            ),
+            "total_solver_runtime_s":   sum(self._solver_runtimes),
+            "max_consecutive_failures": self._consecutive_failures,
         }
 
     def __repr__(self) -> str:

@@ -219,8 +219,12 @@ def run_simulation(
    # Solver duration
     duration_statistic:   str   = settings.SOLVER_DURATION_STATISTIC,
 
+    # FCFS-vergelijking: minimale objective-verbetering (in seconden) t.o.v.
+    # FCFS-baseline om de MIP-oplossing toe te passen. 0.0 = uitgeschakeld.
+    min_objective_improvement: float = 0.0,
+
     # Dispatcher
-    strict_order:         bool  = False, #!!!
+    queue_mode:           str   = "fsfs",
 
     # Output
     output_dir:           Path | str = settings.RESULTS_DIR,
@@ -250,20 +254,21 @@ def run_simulation(
         config_dir : Path         — pad naar configuratiemap (altijd gevuld)
     """
     params = dict(
-        n_freight            = n_freight,
-        trigger_strategy     = trigger_strategy,
-        event_driven_freq    = event_driven_freq,
-        controller_freq      = controller_freq,
-        periodic_freq        = periodic_freq,
-        threshold_confidence = threshold_confidence,
-        objective_strategy   = objective_strategy,
-        weight_passenger     = weight_passenger,
-        weight_freight       = weight_freight,
-        upgrade_weight       = upgrade_weight,
-        mc_delay_per_train   = mc_delay_per_train,
-        dynamic_threshold    = dynamic_threshold,
-        duration_statistic   = duration_statistic,
-        seed                 = seed,
+        n_freight                 = n_freight,
+        trigger_strategy          = trigger_strategy,
+        event_driven_freq         = event_driven_freq,
+        controller_freq           = controller_freq,
+        periodic_freq             = periodic_freq,
+        threshold_confidence      = threshold_confidence,
+        objective_strategy        = objective_strategy,
+        weight_passenger          = weight_passenger,
+        weight_freight            = weight_freight,
+        upgrade_weight            = upgrade_weight,
+        mc_delay_per_train        = mc_delay_per_train,
+        dynamic_threshold         = dynamic_threshold,
+        duration_statistic        = duration_statistic,
+        min_objective_improvement = min_objective_improvement,
+        seed                      = seed,
     )
 
     # config_dir altijd aanmaken — ook als de run later deadlockt
@@ -290,17 +295,18 @@ def run_simulation(
 
     # 3. Controller bouwen
     controller = Controller(
-        trigger            = trigger,
-        trains             = trains,
-        segments           = segments,
-        timetable          = timetable,
-        objective_strategy = objective_strategy,
-        weight_passenger   = weight_passenger,
-        weight_freight     = weight_freight,
-        subtype_weights    = subtype_weights,
-        upgrade_weight     = upgrade_weight,
-        gamma              = dynamic_threshold,
-        duration_statistic   = duration_statistic,
+        trigger                    = trigger,
+        trains                     = trains,
+        segments                   = segments,
+        timetable                  = timetable,
+        objective_strategy         = objective_strategy,
+        weight_passenger           = weight_passenger,
+        weight_freight             = weight_freight,
+        subtype_weights            = subtype_weights,
+        upgrade_weight             = upgrade_weight,
+        gamma                      = dynamic_threshold,
+        duration_statistic         = duration_statistic,
+        min_objective_improvement  = min_objective_improvement,
     )
 
     # 4. Simulatie uitvoeren
@@ -311,7 +317,7 @@ def run_simulation(
         timetable  = timetable,
         controller = controller,
         seed       = seed,
-        strict_order= strict_order #!!!
+        queue_mode=queue_mode,
     )
 
     deadlock_detected = False

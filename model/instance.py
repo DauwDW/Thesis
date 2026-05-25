@@ -174,20 +174,21 @@ def build_instance(
                     )
                 else:
                     runtime[(train.id, seg)] = timetable.running_time(train.id, seg)
-                runtime[(train.id, seg)] = timetable.running_time(train.id, seg)
+                # runtime[(train.id, seg)] = timetable.running_time(train.id, seg)
+
             if seg in Ss:
                 dwell[(train.id, seg)] = timetable.dwell_time(train.id, seg)    # !!! check of dwell_time dezelfde waarde geeft als de simulator gebruikt voor dwell segmets
 
 
             #deterministische dwells!!!!
             # if seg in Ss:
-                # if train.halts_at(seg):
-                #     entry_sec = sched_entry[(train.id, seg)]
-                #     hour = (entry_sec % 86400) / 3600
-                #     is_peak = 6 <= hour < 9 or 16 <= hour < 19
-                #     dwell[(train.id, seg)] = 120 if is_peak else 60
-                # else:
-                #     dwell[(train.id, seg)] = 1
+            #     if train.halts_at(seg):
+            #         entry_sec = sched_entry[(train.id, seg)]
+            #         hour = (entry_sec % 86400) / 3600
+            #         is_peak = 6 <= hour < 9 or 16 <= hour < 19
+            #         dwell[(train.id, seg)] = 120 if is_peak else 60
+            #     else:
+            #         dwell[(train.id, seg)] = 1
 
     halts = {
         (train.id, seg): train.halts_at(seg)
@@ -463,6 +464,7 @@ def build_instance(
         halts = halts,
         dwell=dwell,
         sched_exit=sched_exit,
+        expected_entry=expected_entry,
         expected_exit=expected_exit,
         occupied=occupied,
         fixed_entry=fixed_entry,

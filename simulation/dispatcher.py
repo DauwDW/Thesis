@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 
-logger = logging.getLogger(__name__)
+from config.settings import DISPATCHER_PRIORITY_TTL
 
+logger = logging.getLogger(__name__)
+_VALID_QUEUE_MODES = ("fsfs", "fcfs")
 
 class Dispatcher:
     """
@@ -37,10 +39,16 @@ class Dispatcher:
       - C2-constraint via min_exit_time
     """
 
-    def __init__(self, timetable, segments, trains, strict_order: bool = False) -> None:
+    def __init__(self, timetable, segments, trains, queue_mode: str = "fsfs") -> None:
+        if queue_mode not in _VALID_QUEUE_MODES:
+            raise ValueError(
+                f"Unknown queue_mode: '{queue_mode}'. "
+                f"Use one of {_VALID_QUEUE_MODES}."
+            )
         self._timetable = timetable
         self._trains = trains
-        self._strict_order = strict_order  # default False
+        self._queue_mode = queue_mode
+
         self._occupied: dict[str, int | None] = {
             seg_id: None for seg_id in segments
         }
@@ -48,46 +56,11 @@ class Dispatcher:
             seg_id: [] for seg_id in segments
         }
 
-    # ==========================================================================
-    # Strict-order check
-    # ==========================================================================
+        # Tijdstip van de laatste toegepaste MIP-oplossing.
+        # float("-inf") → nooit gerescheduled → prioriteit is direct verouderd.
+        self._last_reschedule_time: float = float("-inf")
 
-    def _strict_order_allows(self, train_id: int, segment_id: str, state) -> bool:
-        """
-        True als er geen niet-afgeronde trein bestaat met lagere mip_entry
-        op dit segment die dit segment nog niet binnen is en ook nog niet
-        voorbij is. Alleen actief wanneer strict_order=True.
 
-        Treinen zonder mip_entry op dit segment leggen geen volgorde-
-        constraint op — return True.
-        """
-        my_mip = state.mip_entry_for(train_id, segment_id) if state else None
-        if my_mip is None:
-            return True
-
-        for other_id in self._trains:
-            if other_id == train_id:
-                continue
-            if state.is_finished(other_id):
-                continue
-
-            other_mip = state.mip_entry_for(other_id, segment_id)
-            if other_mip is None or other_mip >= my_mip:
-                continue
-
-            # Andere trein is fysiek al voorbij dit segment in zijn eigen
-            # pad → kan deze trein niet meer blokkeren.
-            if self._has_passed(other_id, segment_id, state):
-                continue
-
-            # Andere trein is dit segment al binnengekomen → ok.
-            try:
-                state.actual_entry(other_id, segment_id)
-                continue
-            except KeyError:
-                return False
-
-        return True
 
     def _has_passed(self, train_id: int, segment_id: str, state) -> bool:
         """
@@ -133,25 +106,16 @@ class Dispatcher:
           - segment bezet is, of
           - in strict-order modus: een trein met lagere mip_entry op dit
             segment is nog niet binnen en nog niet voorbij, of
-          - segment vrij is maar een hogere-prioriteits-wachter al in de
-            queue zit voor dit segment.
         """
         waiters = self._waiting[segment_id]
 
         if self._occupied[segment_id] is not None:
             self._enqueue(train_id, segment_id)
             return False
-
-        if self._strict_order and not self._strict_order_allows(
-            train_id, segment_id, state
-        ):
-            self._enqueue(train_id, segment_id)
-            return False
-
-        # Segment is vrij — mag déze trein voorgaan?
-        # if waiters and self._priority_winner(segment_id, state) != train_id:
-        #     self._enqueue(train_id, segment_id)
-        #     return False
+        if self._queue_mode == "fsfs":
+            if waiters and self._priority_winner(segment_id, state, current_time) != train_id:
+                self._enqueue(train_id, segment_id)
+                return False
 
         # Toegang verleend — uit queue halen indien aanwezig
         if train_id in waiters:
@@ -176,29 +140,23 @@ class Dispatcher:
     # Queue management
     # ==========================================================================
 
-    def next_waiter(self, segment_id: str, state=None) -> int | None:
+    def notify_reschedule(self, current_time: float) -> None:
         """
-        Geeft de train_id van de hoogste-prioriteits-wachter die ook
-        daadwerkelijk binnen zou mogen, of None.
+        Registreer het tijdstip waarop een MIP-oplossing werd toegepast.
 
-        Wordt door de simulator opgevraagd direct na een release om de
-        wachtende trein te wekken via een nieuw event.
-
-        In strict-order modus geven we None terug als de prioriteits-
-        winnaar zijn strict-order check niet zou doorstaan: hem wekken
-        zou een no-op event genereren (hij zet zichzelf direct opnieuw
-        in de queue) en de event-queue kan dan onnodig leeg lopen.
+        Zolang current_time - _last_reschedule_time < _PRIORITY_TTL gebruikt
+        de dispatcher mip_entry als prioriteit (FSFS op MIP-plan).
+        Daarna valt hij terug op scheduled_entry (timetable-volgorde) zodat
+        verouderde MIP-prioriteiten geen deadlocks kunnen veroorzaken.
         """
+        self._last_reschedule_time = current_time
+
+    def next_waiter(self, segment_id: str, state=None, current_time: float | None = None) -> int | None:
         if not self._waiting[segment_id]:
             return None
-
-        winner = self._priority_winner(segment_id, state)
-
-        if self._strict_order and state is not None:
-            if not self._strict_order_allows(winner, segment_id, state):
-                return None
-
-        return winner
+        if self._queue_mode == "fcfs":
+            return self._waiting[segment_id][0]
+        return self._priority_winner(segment_id, state, current_time)
 
     def remove_from_queues(self, train_id: int) -> None:
         """
@@ -221,17 +179,46 @@ class Dispatcher:
         if train_id not in waiters:
             waiters.append(train_id)
 
-    def _priority_winner(self, segment_id: str, state) -> int:
-        """
-        Kies de hoogste-prio waiter: laagste mip_entry, met FIFO als tiebreak
-        en als fallback voor wachters zonder mip_entry.
-        """
+    def _priority_winner(
+        self,
+        segment_id: str,
+        state,
+        current_time: float | None = None,
+    ) -> int:
         waiters = self._waiting[segment_id]
 
-        def key(idx_tid):
-            idx, tid = idx_tid
-            mip = state.mip_entry_for(tid, segment_id) if state is not None else None
-            return (mip if mip is not None else float("inf"), idx)
+        # Bepaal of de MIP-oplossing nog vers genoeg is om te gebruiken.
+        # Als current_time onbekend is, val terug op het oude gedrag (gebruik mip_entry).
+        use_mip = (
+            current_time is None
+            or current_time - self._last_reschedule_time < DISPATCHER_PRIORITY_TTL
+        )
+
+        if use_mip:
+            # FSFS op MIP-plan: laagste mip_entry gaat eerst.
+            def key(idx_tid):
+                idx, tid = idx_tid
+                mip = state.mip_entry_for(tid, segment_id) if state is not None else None
+                return (mip if mip is not None else float("inf"), idx)
+        else:
+            # Fallback: FSFS op timetable (scheduled_entry).
+            # Deterministisch en altijd cirkel-vrij — voorkomt deadlocks door
+            # verouderde MIP-prioriteiten.
+            logger.debug(
+                "priority_winner: MIP-prioriteit verouderd (%.0fs geleden, TTL=%.0fs) "
+                "voor seg=%s — gebruik scheduled_entry",
+                current_time - self._last_reschedule_time,
+                DISPATCHER_PRIORITY_TTL,
+                segment_id,
+            )
+
+            def key(idx_tid):
+                idx, tid = idx_tid
+                try:
+                    sched = self._timetable.scheduled_entry(tid, segment_id)
+                except (KeyError, AttributeError):
+                    sched = None
+                return (sched if sched is not None else float("inf"), idx)
 
         indexed = list(enumerate(waiters))
         winner_idx, winner_tid = min(indexed, key=key)
@@ -262,18 +249,15 @@ class Dispatcher:
 
         if not train.halts_at(segment_id):
             return entry_time
-
+        
         # mip_exit = state.mip_exit_for(train_id, segment_id)
-
         # if mip_exit is not None:
         #     return mip_exit
-
-        fallback = self._timetable.scheduled_exit(train_id, segment_id)
 
         # logger.debug(
         #     "fallback naar scheduled_exit voor dwell-segment train=%s seg=%s "
         #     "exit=%.1f",
         #     train_id, segment_id, fallback,
         # )
-
+        fallback = self._timetable.scheduled_exit(train_id, segment_id)
         return fallback

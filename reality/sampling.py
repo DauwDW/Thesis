@@ -22,13 +22,12 @@ import logging
 
 import numpy as np
 
-from config.settings import FREIGHT_RUNNING_TIME_SCALE
+from config.settings import FREIGHT_RUNNING_TIME_SCALE, FREIGHT_POOL_TYPES
 from data.running_distributions import _load
 
 logger = logging.getLogger(__name__)
 
-PASSING_DURATION   = 1.0
-FREIGHT_POOL_TYPES = ("IC", "L", "S")
+PASSING_DURATION = 1.0
 
 
 def _pool_samples(
@@ -69,9 +68,9 @@ def _pool_samples(
             for p_data in dyn_data.values():
                 samples.extend(p_data["real"])
     if samples:
-        logger.debug(
-            f"Fallback (drop period): ({section}, {train_types}, {dynamics}, {period})"
-        )
+        # logger.debug(
+        #     f"Fallback (drop period): ({section}, {train_types}, {dynamics}, {period})"
+        # )
         return samples
 
     # 3. Drop dynamics: alle dynamics en periodes
@@ -80,9 +79,9 @@ def _pool_samples(
             for p_data in dyn_data.values():
                 samples.extend(p_data["real"])
     if samples:
-        logger.debug(
-            f"Fallback (drop dynamics): ({section}, {train_types}, {dynamics}, {period})"
-        )
+    #     logger.debug(
+    #         f"Fallback (drop dynamics): ({section}, {train_types}, {dynamics}, {period})"
+    #     )
         return samples
 
     return None
@@ -124,10 +123,10 @@ def sample_running_time(
     samples = _pool_samples(data, section, pool_types, dynamics, period)
 
     if samples is None:
-        logger.debug(
-            f"Geen data voor ({section}, {train_type}, {dynamics}, {period}) "
-            f"— caller gebruikt geplande rijtijd"
-        )
+        # logger.debug(
+        #     f"Geen data voor ({section}, {train_type}, {dynamics}, {period}) "
+        #     f"— caller gebruikt geplande rijtijd"
+        # )
         return None
 
     return float(rng.choice(samples)) * scale
@@ -176,6 +175,20 @@ def running_time_statistic(
         value = float(np.mean(samples))
     elif statistic == "p25":
         value = float(np.percentile(samples, 25))
+    elif statistic == "p40":
+        value = float(np.percentile(samples, 40))
+    # sampling.py — running_time_statistic()
+    elif statistic == "p60":
+        value = float(np.percentile(samples, 60))
+    elif statistic == "p65":
+        value = float(np.percentile(samples, 65))
+    elif statistic == "p70":
+        value = float(np.percentile(samples, 70))
+    elif statistic == "p75":
+        value = float(np.percentile(samples, 75))
+    elif statistic == "p80":
+        value = float(np.percentile(samples, 80))
+
     else:
         raise ValueError(
             f"Onbekende statistic: '{statistic}'. "
