@@ -90,35 +90,47 @@ def results_to_dataframe(state, trains, timetable):
     Bouwt een DataFrame met één rij per (train_id, segment_id).
     Bij een deadlock-run bevat dit alleen de segmenten die voor
     de deadlock volledig afgerond waren.
+
+    Bij retracking: segment_id bevat het GEKOZEN platform (actual),
+    planned_segment_id het geplande platform. Delays zijn berekend
+    t.o.v. de geplande tijden (via planned_segment_id).
     """
     records = []
 
     for train_id, train in trains.items():
-        for seg_id in train.path:
+        for planned_seg in train.path:
+            actual_seg = state.get_chosen_seg(train_id, planned_seg)
             try:
-                actual_entry = state.actual_entry(train_id, seg_id)
-                actual_exit  = state.actual_exit(train_id, seg_id)
+                actual_entry = state.actual_entry(train_id, actual_seg)
+                actual_exit  = state.actual_exit(train_id, actual_seg)
             except KeyError:
                 continue
 
             try:
-                planned_entry = timetable.scheduled_entry(train_id, seg_id)
-                planned_exit  = timetable.scheduled_exit(train_id, seg_id)
+                planned_entry = timetable.scheduled_entry(train_id, planned_seg)
+                planned_exit  = timetable.scheduled_exit(train_id, planned_seg)
             except KeyError:
                 planned_entry = None
                 planned_exit  = None
 
             records.append({
-                "train_id":      train_id,
-                "train_type":    train.train_type.value,
-                "train_subtype": train.train_subtype.value,
-                "segment_id":    seg_id,
-                "planned_entry": planned_entry,
-                "planned_exit":  planned_exit,
-                "actual_entry":  actual_entry,
-                "actual_exit":   actual_exit,
-                "entry_delay": actual_entry - planned_entry,
-                "exit_delay":  actual_exit - planned_exit,
+                "train_id":           train_id,
+                "train_type":         train.train_type.value,
+                "train_subtype":      train.train_subtype.value,
+                "segment_id":         actual_seg,
+                "planned_segment_id": planned_seg,
+                "planned_entry":      planned_entry,
+                "planned_exit":       planned_exit,
+                "actual_entry":       actual_entry,
+                "actual_exit":        actual_exit,
+                "entry_delay": (
+                    actual_entry - planned_entry
+                    if planned_entry is not None else None
+                ),
+                "exit_delay": (
+                    actual_exit - planned_exit
+                    if planned_exit is not None else None
+                ),
             })
 
     return pd.DataFrame(records)
@@ -277,7 +289,7 @@ def run_simulation(
 
     # 1. Data laden
     print("Loading data...")
-    trains, segments, timetable = load_all(n_freight)
+    trains, segments, timetable, platform_alternatives = load_all(n_freight)
 
     # 2. Trigger bouwen
     print(f"Building controller (trigger={trigger_strategy}, objective={objective_strategy})...")
@@ -308,6 +320,7 @@ def run_simulation(
         gamma                      = dynamic_threshold,
         duration_statistic         = duration_statistic,
         min_objective_improvement  = min_objective_improvement,
+        platform_alternatives      = platform_alternatives,
     )
 
     # 4. Simulatie uitvoeren

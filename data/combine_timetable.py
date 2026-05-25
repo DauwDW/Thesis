@@ -45,6 +45,18 @@ def combine_timetables(n_freight: int) -> pd.DataFrame:
 
     combined = add_time_in_seconds(combined)
 
+    # De passenger gold-bestanden bevatten al een '-- platform X' suffix in SECTION
+    # (opgeslagen na de eerste assign_platforms aanroep).  Als we hier opnieuw
+    # assign_platforms aanroepen zonder reset, krijgen we dubbele suffixen:
+    #   'BRUSSEL-CENTRAAL -- platform 4 -- platform 3'
+    # SECTION_MACRO bevat de originele segmentnaam zonder suffix.
+    # We resetten SECTION → SECTION_MACRO zodat assign_platforms schoon opnieuw
+    # kan toewijzen en we correcte enkelvoudige suffixen krijgen.
+    if 'SECTION_MACRO' in combined.columns:
+        has_macro = combined['SECTION_MACRO'].notna()
+        combined.loc[has_macro, 'SECTION'] = combined.loc[has_macro, 'SECTION_MACRO']
+        combined = combined.drop(columns=['SECTION_MACRO'])
+
     combined, platform_diagnostics = assign_platforms(combined)
     logger.info(platform_diagnostics.summary())
 

@@ -70,18 +70,26 @@ class Dispatcher:
         Defensief tegen oude MIP-entries die nog in state staan voor
         segmenten die de trein in werkelijkheid al gepasseerd is, of
         voor segmenten die niet in zijn pad zitten.
+
+        Bij retracking: segment_id kan een gekozen platform zijn dat niet
+        letterlijk in train.path voorkomt. We vertalen eerst naar het geplande
+        segment voor de path-lookup, en controleren dan op gekozen segmenten.
         """
         train = self._trains[train_id]
-        path = train.path
+        path  = train.path
+
+        # Vertaal naar gepland segment voor path-index lookup
+        planned_seg = state.get_planned_seg_for(train_id, segment_id)
         try:
-            idx_seg = path.index(segment_id)
+            idx_seg = path.index(planned_seg)
         except ValueError:
             # segment niet in pad van deze trein — kan dus nooit blokkeren
             return True
 
-        for later_seg in path[idx_seg + 1:]:
+        for later_planned in path[idx_seg + 1:]:
+            later_actual = state.get_chosen_seg(train_id, later_planned)
             try:
-                state.actual_entry(train_id, later_seg)
+                state.actual_entry(train_id, later_actual)
                 return True
             except KeyError:
                 continue
@@ -250,9 +258,9 @@ class Dispatcher:
         if not train.halts_at(segment_id):
             return entry_time
         
-        # mip_exit = state.mip_exit_for(train_id, segment_id)
-        # if mip_exit is not None:
-        #     return mip_exit
+        mip_exit = state.mip_exit_for(train_id, segment_id)
+        if mip_exit is not None:
+            return mip_exit
 
         # logger.debug(
         #     "fallback naar scheduled_exit voor dwell-segment train=%s seg=%s "

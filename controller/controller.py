@@ -65,6 +65,7 @@ class Controller:
         duration_statistic:"scheduled",
         subtype_weights=None,
         min_objective_improvement: float = 0.0,
+        platform_alternatives: dict | None = None,
     ) -> None:
 
         self.trigger = trigger
@@ -87,12 +88,16 @@ class Controller:
         # 0.0 (default) = uitgeschakeld: elke feasible oplossing wordt toegepast.
         self.min_objective_improvement = min_objective_improvement
 
+        # Platform-alternatieven voor retracking
+        self.platform_alternatives = platform_alternatives or {}
+
         self._solver_runtimes: list[float] = []
 
         self._n_rescheduled = 0
         self._n_fcfs_fallback = 0
         self._n_skipped = 0
         self._n_skipped_no_improvement = 0
+        self._n_platform_switches = 0
         self._consecutive_failures = 0
 
     # =========================================================================
@@ -136,7 +141,7 @@ class Controller:
             subtype_weights=self.subtype_weights,
             gamma=self.gamma,
             duration_statistic=self.duration_statistic,
-
+            platform_alternatives=self.platform_alternatives,
         )
 
         # ---------------------------------------------------------------------
@@ -202,6 +207,7 @@ class Controller:
             self.trigger.notify_rescheduled(current_time, state)
 
             self._n_rescheduled += 1
+            self._n_platform_switches += solution.n_platform_switches
             self._solver_runtimes.append(solution.runtime)
 
             self._log(
@@ -210,7 +216,8 @@ class Controller:
                 (
                     f"status={solution.status}, "
                     f"objective={solution.objective:.2f}, "
-                    f"solver_runtime={solution.runtime:.2f}s"
+                    f"solver_runtime={solution.runtime:.2f}s, "
+                    f"platform_switches={solution.n_platform_switches}"
                 ),
             )
 
@@ -267,6 +274,7 @@ class Controller:
             "n_fcfs_fallback":          self._n_fcfs_fallback,
             "n_skipped":                self._n_skipped,
             "n_skipped_no_improvement": self._n_skipped_no_improvement,
+            "n_platform_switches":      self._n_platform_switches,
             "n_evaluated":              self.trigger.n_evaluated,
             "total_steps": (
                 self._n_rescheduled

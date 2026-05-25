@@ -21,25 +21,31 @@ class Solution:
 
     Attributes
     ----------
-    status    : str         — 'optimal', 'timeout', 'infeasible', 'unknown'
-    objective : float|None  — objective value (total weighted delay)
-    runtime   : float       — solver runtime in seconds
-    entry     : dict        — {(train_id, segment_id): entry time}
-    exit      : dict        — {(train_id, segment_id): exit time}
-    delay     : dict        — {(train_id, segment_id): delay in seconds}
+    status             : str         — 'optimal', 'timeout', 'infeasible', 'unknown'
+    objective          : float|None  — objective value (total weighted delay)
+    runtime            : float       — solver runtime in seconds
+    entry              : dict        — {(train_id, segment_id): entry time}
+    exit               : dict        — {(train_id, segment_id): exit time}
+    delay              : dict        — {(train_id, segment_id): delay in seconds}
+    platform_choices   : dict        — {(train_id, planned_seg): chosen_seg}
+                                       Alleen gevuld als chosen_seg ≠ planned_seg.
+    n_platform_switches: int         — aantal treinen die een ander platform kregen
     """
 
-    def __init__(self, status, objective, runtime, entry, exit, delay):
-        self.status    = status
-        self.objective = objective
-        self.runtime   = runtime
-        self.entry     = entry
-        self.exit      = exit
-        self.delay     = delay
+    def __init__(self, status, objective, runtime, entry, exit, delay,
+                 platform_choices=None, n_platform_switches=0):
+        self.status               = status
+        self.objective            = objective
+        self.runtime              = runtime
+        self.entry                = entry
+        self.exit                 = exit
+        self.delay                = delay
+        self.platform_choices     = platform_choices or {}
+        self.n_platform_switches  = n_platform_switches
 
     def is_feasible(self) -> bool:
         """True als de solver een haalbare oplossing heeft gevonden."""
-        return self.status in ("optimal", "timout")   # timeout weglaten, anders , "timeout" toevoegen
+        return self.status in ("optimal",)
 
     def entry_time(self, train_id, segment_id) -> float | None:
         return self.entry.get((train_id, segment_id))
@@ -59,16 +65,17 @@ class Solution:
         )
 
 
-def parse_solution(model, entry, dep, delay) -> Solution:
+def parse_solution(model, entry, dep, delay, x=None) -> Solution:
     """
     Parses Gurobi model output into a Solution object.
 
     Parameters
     ----------
     model : gurobipy.Model
-    entry : dict {(train_id, seg_id): Var}  — entry-tijden
-    dep   : dict {(train_id, seg_id): Var}  — exit-tijden
-    delay : dict {(train_id, seg_id): Var}  — vertragingen
+    entry : dict {(train_id, seg_id): Var}           — entry-tijden
+    dep   : dict {(train_id, seg_id): Var}           — exit-tijden
+    delay : dict {(train_id, seg_id): Var}           — vertragingen
+    x     : dict {(train_id, planned_seg, p): Var}   — platform-keuze (optioneel)
     """
 
     # --- Status ---
@@ -94,12 +101,27 @@ def parse_solution(model, entry, dep, delay) -> Solution:
             delay={},
         )
 
+    # --- Platform-keuzes extraheren uit x-variabelen ---
+    platform_choices: dict[tuple[int, str], str] = {}
+    if x:
+        for (t, s_planned, p), var in x.items():
+            if round(var.X) == 1:
+                # Sla op voor alle keuzes (ook als p == s_planned)
+                platform_choices[(t, s_planned)] = p
+
+    n_switches = sum(
+        1 for (t, s_planned), chosen in platform_choices.items()
+        if chosen != s_planned
+    )
+
     # --- Haalbare oplossing: extraheer variabelwaarden ---
     return Solution(
-        status    = status,
-        objective = model.ObjVal,
-        runtime   = model.Runtime,
-        entry     = {key: var.X for key, var in entry.items()},
-        exit      = {key: var.X for key, var in dep.items()},
-        delay     = {key: var.X for key, var in delay.items()},
+        status               = status,
+        objective            = model.ObjVal,
+        runtime              = model.Runtime,
+        entry                = {key: var.X for key, var in entry.items()},
+        exit                 = {key: var.X for key, var in dep.items()},
+        delay                = {key: var.X for key, var in delay.items()},
+        platform_choices     = platform_choices,
+        n_platform_switches  = n_switches,
     )

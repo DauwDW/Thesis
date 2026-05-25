@@ -623,6 +623,75 @@ def assign_platforms(
 
 
 # =============================================================================
+# Platform-alternatieven voor retracking
+# =============================================================================
+
+# Stations waarvan de platforms NIET als vrije pool worden behandeld.
+# Brussel-Noord: lijn-gemapte platforms (lijn 50 → platform 1, enz.) — geen vrije keuze.
+_RETRACK_EXCLUDED: set[str] = {"BRUSSEL-NOORD"}
+
+
+def get_platform_alternatives(
+    df: pd.DataFrame,
+    excluded: set[str] | None = None,
+) -> dict[tuple[int, str], list[str]]:
+    """
+    Scant de combined timetable op stations met '-- platform X' segmenten
+    en retourneert voor elke (train_id, planned_segment) de alternatieven.
+
+    Alleen stations waarbij assign_platforms alle platforms als één pool
+    behandelt (greedy interval scheduling) hebben zinvolle alternatieven.
+    Stations met richtings-specifieke segmentnamen (Brussel-Zuid, Schaarbeek)
+    bevatten geen '-- platform X' segmenten en vallen automatisch buiten scope.
+
+    Parameters
+    ----------
+    df       : combined timetable DataFrame (output van combine_timetables)
+    excluded : set van stationnamen die uitgesloten worden; default = _RETRACK_EXCLUDED
+
+    Returns
+    -------
+    dict {(train_id, planned_segment_id): [alt_segment_id, ...]}
+    planned_segment_id is NIET opgenomen in de lijst van alternatieven.
+    """
+    import re
+
+    if excluded is None:
+        excluded = _RETRACK_EXCLUDED
+
+    pat = re.compile(r'^(.+?) -- platform \d')
+
+    # Verzamel alle platform-X segmenten per station
+    station_pools: dict[str, set[str]] = {}
+    station_mask = df['TYPE'].isin(['WITHIN-STATION-DWELL', 'WITHIN-STATION-PASSING'])
+    for seg in df.loc[station_mask, 'SECTION'].unique():
+        m = pat.match(seg)
+        if m:
+            station = m.group(1)
+            if station not in excluded:
+                station_pools.setdefault(station, set()).add(seg)
+
+    # Stations met slechts één segment hebben geen alternatief
+    station_pools = {s: pool for s, pool in station_pools.items() if len(pool) > 1}
+
+    # Voor elke (train, station-segment) in scope: alternatieven = pool minus gepland
+    result: dict[tuple[int, str], list[str]] = {}
+    for _, row in df.loc[station_mask].iterrows():
+        seg = row['SECTION']
+        m = pat.match(seg)
+        if not m:
+            continue
+        station = m.group(1)
+        if station not in station_pools:
+            continue
+        alts = sorted(station_pools[station] - {seg})
+        if alts:
+            result[(int(row['TRAIN_NO']), seg)] = alts
+
+    return result
+
+
+# =============================================================================
 # Opslaan / laden
 # =============================================================================
 

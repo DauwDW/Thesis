@@ -288,6 +288,11 @@ class Simulator:
         """
         current_time = self._state.current_time
 
+        # --- Retracking: platform-overrides registreren vóór event-push ---
+        for (train_id, planned_seg), chosen_seg in solution.platform_choices.items():
+            if train_id in self._trains:
+                self._state.set_platform_choice(train_id, planned_seg, chosen_seg)
+
         # Groepeer entries en departures per trein
         train_data: dict[int, dict[str, tuple[float, float]]] = {}
         for (train_id, segment_id), mip_entry in solution.entry.items():
@@ -317,29 +322,39 @@ class Simulator:
                 remaining = self._state.remaining_path(train_id)
                 if not remaining:
                     continue
-                first_seg  = remaining[0]
-                mip_entry  = seg_schedule.get(first_seg, (None, None))[0]
+                # remaining[0] is het GEKOZEN platform (na retracking);
+                # seg_schedule is geïndexeerd op geplande segmenten.
+                first_seg_chosen  = remaining[0]
+                first_seg_planned = self._state.get_planned_seg_for(
+                    train_id, first_seg_chosen
+                )
+                mip_entry = seg_schedule.get(first_seg_planned, (None, None))[0]
                 if mip_entry is None:
                     continue
 
-                # scheduled_entry als ondergrens: trein kan het netwerk niet vroeger
-                # betreden dan zijn geplande vertrektijd, ook niet na een reschedule.
-                sched_entry = self._timetable.scheduled_entry(train_id, first_seg)
-                safe_time   = max(mip_entry, current_time, sched_entry)
-                self._queue.cancel_train_entered(train_id, first_seg)
+                # scheduled_entry als ondergrens — opzoeken via gepland segment
+                sched_entry = self._timetable.scheduled_entry(
+                    train_id, first_seg_planned
+                )
+                safe_time = max(mip_entry, current_time, sched_entry)
+                self._queue.cancel_train_entered(train_id, first_seg_chosen)
                 self._queue.push(TrainEntered(
-                    time=safe_time, train_id=train_id, segment_id=first_seg,
+                    time=safe_time, train_id=train_id, segment_id=first_seg_chosen,
                 ))
 
             # ---- Actief ----
             else:
-                mip_dep_curr = seg_schedule.get(current_seg, (None, None))[1]
+                # current_seg kan een gekozen platform zijn; seg_schedule gebruikt geplande sleutels
+                current_seg_planned = self._state.get_planned_seg_for(
+                    train_id, current_seg
+                )
+                mip_dep_curr = seg_schedule.get(current_seg_planned, (None, None))[1]
                 if mip_dep_curr is None:
                     continue
 
                 try:
-                    ae        = self._state.actual_entry(train_id, current_seg)
-                    sd        = self._state.sampled_duration(train_id, current_seg)
+                    ae         = self._state.actual_entry(train_id, current_seg)
+                    sd         = self._state.sampled_duration(train_id, current_seg)
                     phys_ready = ae + sd
                 except KeyError:
                     phys_ready = current_time
@@ -355,12 +370,18 @@ class Simulator:
     # ------------------------------------------------------------------
 
     def _next_segment(self, train_id: int, segment_id: str) -> str | None:
-        path = self._trains[train_id].path
+        # Vertaal actual seg → planned seg voor path-lookup (retracking)
+        planned = self._state.get_planned_seg_for(train_id, segment_id)
+        path    = self._trains[train_id].path
         try:
-            idx = path.index(segment_id)
+            idx = path.index(planned)
         except ValueError:
             return None
-        return path[idx + 1] if idx + 1 < len(path) else None
+        if idx + 1 >= len(path):
+            return None
+        next_planned = path[idx + 1]
+        # Vertaal planned → gekozen platform voor het volgende segment
+        return self._state.get_chosen_seg(train_id, next_planned)
 
     def _compute_ready_time(self, train_id: int, segment_id: str, entry_time: float) -> float:
         duration = sample_duration(

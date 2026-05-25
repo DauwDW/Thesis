@@ -80,6 +80,7 @@ def build_instance(
     gamma,
     duration_statistic = SOLVER_DURATION_STATISTIC,
     subtype_weights=None,
+    platform_alternatives: dict | None = None,
 ):
     if priority_strategy not in ("static", "dynamic"):
         raise ValueError(
@@ -104,8 +105,10 @@ def build_instance(
         if has_started(state, train): #trein die al aan het rijden is sws toevoegen
             relevant.append(train)
             continue
-        first_seg  = remaining[0] 
-        start_time = timetable.scheduled_entry(train.id, first_seg)
+        first_seg  = remaining[0]
+        # Na retracking kan first_seg een gekozen platform zijn; vertaal naar gepland voor timetable.
+        first_seg_planned = state.get_planned_seg_for(train.id, first_seg)
+        start_time = timetable.scheduled_entry(train.id, first_seg_planned)
         if start_time <= horizon_end:# treinen die nog niet begonnen zijn maar hun planned entry wel binnen de horizon ligt
             relevant.append(train)
 
@@ -156,8 +159,12 @@ def build_instance(
 
     for train in relevant:
         for seg in path[train.id]:
-            sched_entry[(train.id, seg)] = timetable.scheduled_entry(train.id, seg)
-            sched_exit[(train.id, seg)]  = timetable.scheduled_exit(train.id, seg)
+            # Na retracking kan seg een gekozen platform zijn; voor timetable-lookups
+            # vertalen we terug naar het geplande segment (timing is equivalent).
+            planned_seg = state.get_planned_seg_for(train.id, seg)
+
+            sched_entry[(train.id, seg)] = timetable.scheduled_entry(train.id, planned_seg)
+            sched_exit[(train.id, seg)]  = timetable.scheduled_exit(train.id, planned_seg)
 
             if seg in Sl:
                 if duration_statistic != "scheduled":
@@ -170,14 +177,14 @@ def build_instance(
                     )
                     runtime[(train.id, seg)] = (
                         empirical if empirical is not None
-                        else timetable.running_time(train.id, seg)
+                        else timetable.running_time(train.id, planned_seg)
                     )
                 else:
-                    runtime[(train.id, seg)] = timetable.running_time(train.id, seg)
-                # runtime[(train.id, seg)] = timetable.running_time(train.id, seg)
+                    runtime[(train.id, seg)] = timetable.running_time(train.id, planned_seg)
+                # runtime[(train.id, seg)] = timetable.running_time(train.id, planned_seg)
 
             if seg in Ss:
-                dwell[(train.id, seg)] = timetable.dwell_time(train.id, seg)    # !!! check of dwell_time dezelfde waarde geeft als de simulator gebruikt voor dwell segmets
+                dwell[(train.id, seg)] = timetable.dwell_time(train.id, planned_seg)    # !!! check of dwell_time dezelfde waarde geeft als de simulator gebruikt voor dwell segmets
 
 
             #deterministische dwells!!!!
@@ -451,6 +458,19 @@ def build_instance(
     # RETURN
     # =========================================================================
 
+    # =========================================================================
+    # STEP 7 — Platform-alternatieven (retracking)
+    #
+    # Filter op treinen die in de huidige instance zitten (T).
+    # Alleen segmenten die nog in het resterende pad liggen zijn relevant.
+    # =========================================================================
+
+    filtered_platform_alternatives: dict[tuple[int, str], list[str]] = {}
+    if platform_alternatives:
+        for (train_id, planned_seg), alts in platform_alternatives.items():
+            if train_id in T and planned_seg in path.get(train_id, ()):
+                filtered_platform_alternatives[(train_id, planned_seg)] = alts
+
     return dict(
         T=T,
         Tp=Tp,
@@ -472,4 +492,5 @@ def build_instance(
         weights=weights,
         L=L,
         current_time=current_time,
+        platform_alternatives=filtered_platform_alternatives,
     )

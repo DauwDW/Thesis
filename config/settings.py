@@ -54,6 +54,16 @@ SOLVER_MIP_GAP         = 0.00000001
 RESCHEDULING_HORIZON = 3600 # normaal 7200
 CONFLICT_WINDOW = 1800 # normaal 1200
 
+# Tijdvenster voor retracking-conflicten (z_alt/y_alt variabelen).
+# Kleiner dan CONFLICT_WINDOW om model-explosie te voorkomen bij drukke periodes.
+# Twee treinen worden als potentieel retracking-conflicterend beschouwd als hun
+# verwachte exittijden op het station maximaal RETRACK_CONFLICT_WINDOW uit elkaar liggen.
+RETRACK_CONFLICT_WINDOW = 600  # 10 minuten
+# Maximum aantal visits per fysiek platform in de retracking-conflictenumeratie.
+# Begrenst het aantal z_alt/y_alt variabelen: max C(MAX,2) paren per platform.
+# Hogere waarden geven meer retracking-vrijheid maar vergroot het MIP.
+MAX_RETRACK_VISITS_PER_PLATFORM = 6
+
 # =============================================================================
 # Dispatcher prioriteitsveroudering
 # =============================================================================

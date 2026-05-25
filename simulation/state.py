@@ -100,6 +100,12 @@ class SystemState:
             train_id: {} for train_id in trains
         }
 
+        # Retracking: platform_choices[train_id][planned_seg] = chosen_seg
+        # Alleen ingevuld als chosen_seg ≠ planned_seg (werkelijke switch).
+        self._platform_choices: dict[int, dict[str, str]] = {
+            train_id: {} for train_id in trains
+        }
+
     # ==========================================================================
     # Tijdbeheer
     # ==========================================================================
@@ -160,7 +166,8 @@ class SystemState:
         self._actual[train_id][segment_id] = (entry, time)
 
         train = self._trains[train_id]
-        if segment_id == train.last_segment:
+        last_actual = self.get_chosen_seg(train_id, train.last_segment)
+        if segment_id == last_actual:
             self._current_segment[train_id] = None
 
     # ==========================================================================
@@ -246,6 +253,39 @@ class SystemState:
             )
 
     # ==========================================================================
+    # Platform-keuzes (retracking) — aangeroepen door simulator.py
+    # ==========================================================================
+
+    def set_platform_choice(
+        self,
+        train_id: int,
+        planned_seg: str,
+        chosen_seg: str,
+    ) -> None:
+        """
+        Registreer dat train_id chosen_seg gebruikt in plaats van planned_seg.
+        Wordt aangeroepen door simulator._apply_solution na elke MIP-oplossing.
+        """
+        self._platform_choices[train_id][planned_seg] = chosen_seg
+
+    def get_chosen_seg(self, train_id: int, planned_seg: str) -> str:
+        """
+        Geeft het werkelijk te gebruiken segment voor planned_seg.
+        Retourneert planned_seg zelf als er geen platform-override is.
+        """
+        return self._platform_choices[train_id].get(planned_seg, planned_seg)
+
+    def get_planned_seg_for(self, train_id: int, actual_seg: str) -> str:
+        """
+        Reverse lookup: gegeven een actual segment-id, geef het geplande segment.
+        Retourneert actual_seg zelf als er geen override bestaat.
+        """
+        for planned, actual in self._platform_choices[train_id].items():
+            if actual == actual_seg:
+                return planned
+        return actual_seg
+
+    # ==========================================================================
     # Public interface — aangeroepen door controller/ en model/
     # ==========================================================================
 
@@ -256,24 +296,34 @@ class SystemState:
         Voor niet-gestarte treinen: volledig pad.
         Voor actieve treinen: huidig segment t/m laatste.
         Voor afgewerkte treinen: lege lijst.
+
+        Platform-overrides worden toegepast: als de solver een trein heeft
+        retrackt naar een alternatief platform, bevat de lijst het gekozen
+        platform in plaats van het geplande.
         """
         train = self._trains[train_id]
         current = self._current_segment[train_id]
         actual = self._actual[train_id]
 
+        def _resolve(seg: str) -> str:
+            return self.get_chosen_seg(train_id, seg)
+
         if current is None:
             if not actual:
-                return list(train.path)  # nog niet gestart
+                return [_resolve(s) for s in train.path]  # nog niet gestart
             # Safeguard: check of er nog onafgewerkte segmenten zijn
             for i, seg in enumerate(train.path):
-                entry, exit_ = actual.get(seg, (None, None))
+                resolved = _resolve(seg)
+                entry, exit_ = actual.get(resolved, (None, None))
                 if entry is not None and exit_ is None:
-                    return list(train.path[i:])
+                    return [_resolve(s) for s in train.path[i:]]
             return []  # effectief klaar
 
+        # current kan een gekozen platform zijn — vertaal terug naar planned
+        current_planned = self.get_planned_seg_for(train_id, current)
         try:
-            idx = train.path.index(current)
-            return list(train.path[idx:])
+            idx = train.path.index(current_planned)
+            return [_resolve(s) for s in train.path[idx:]]
         except ValueError:
             return []
 
@@ -288,12 +338,16 @@ class SystemState:
         voor de trigger-logica. Gebruik actual_exit() voor de ruwe offset.
 
         Returns 0.0 als de trein nog geen enkel segment verlaten heeft.
+
+        Bij retracking: de geplande exit wordt opgezocht via het geplande
+        segment-id (ongeacht welk fysiek platform werd gebruikt).
         """
         train    = self._trains[train_id]
         segments = self._actual[train_id]
 
         for seg_id in reversed(train.path):
-            entry, exit_ = segments.get(seg_id, (None, None))
+            actual_seg   = self.get_chosen_seg(train_id, seg_id)
+            entry, exit_ = segments.get(actual_seg, (None, None))
             if exit_ is not None:
                 planned_exit = self._timetable.scheduled_exit(train_id, seg_id)
                 return max(0.0, exit_ - planned_exit)
@@ -302,8 +356,9 @@ class SystemState:
 
     def is_finished(self, train_id: int) -> bool:
         """True als de trein zijn volledige pad afgelegd heeft."""
-        train    = self._trains[train_id]
-        _, exit_ = self._actual[train_id].get(train.last_segment, (None, None))
+        train       = self._trains[train_id]
+        last_actual = self.get_chosen_seg(train_id, train.last_segment)
+        _, exit_    = self._actual[train_id].get(last_actual, (None, None))
         return exit_ is not None
 
     def active_train_ids(self) -> list[int]:

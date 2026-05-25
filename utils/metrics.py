@@ -115,6 +115,7 @@ _METRIC_COLS = [
     'TAD_passenger', 'TAD_freight', 'TAD_combined',
     'delay_ratio',
     'total_solve_time', 'n_rescheduled', 'n_fcfs_fallback', 'n_skipped',
+    'n_platform_switches',
     # per-subtype TED + counts
     *[f'TED_{st}'           for st in _ALL_SUBTYPES],
     *[f'n_{st}'             for st in _ALL_SUBTYPES],
@@ -325,11 +326,12 @@ def build_result_row(
         'solver_timeout':     solver_timeout,
 
         # --- Solver effort ---
-        'total_solve_time':   ctrl.get('total_solver_runtime_s'),
-        'n_rescheduled':      ctrl.get('n_rescheduled'),
-        'n_fcfs_fallback':    ctrl.get('n_fcfs_fallback'),
-        'n_skipped':          ctrl.get('n_skipped'),
-        'infeasible_run':     ctrl.get('n_fcfs_fallback', 0) > 0,
+        'total_solve_time':      ctrl.get('total_solver_runtime_s'),
+        'n_rescheduled':         ctrl.get('n_rescheduled'),
+        'n_fcfs_fallback':       ctrl.get('n_fcfs_fallback'),
+        'n_skipped':             ctrl.get('n_skipped'),
+        'n_platform_switches':   ctrl.get('n_platform_switches', 0),
+        'infeasible_run':        ctrl.get('n_fcfs_fallback', 0) > 0,
 
         # --- Deadlock markering ---
         'deadlock':           deadlock,

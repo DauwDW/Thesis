@@ -42,28 +42,29 @@ def solve(instance, priority_strategy="static", time_limit=SOLVER_TIMEOUT_SECOND
         )
 
     try:
-        model, entry, dep, delay, y, _ = build_and_solve_model(
-            T            = instance["T"],
-            S            = instance["S"],
-            Ss           = instance["Ss"],
-            Sl           = instance["Sl"],
-            path         = instance["path"],
-            sched_entry  = instance["sched_entry"],
-            sched_exit   = instance["sched_exit"],
-            runtime      = instance["runtime"],
-            dwell        = instance["dwell"],
-            conflicts    = instance["conflicts"],
-            occupied     = instance["occupied"],
-            fixed_entry  = instance["fixed_entry"],
-            expected_exit = instance["expected_exit"],
-            halts        = instance["halts"],
-            weights      = instance["weights"],
-            L            = instance["L"],
-            current_time = instance["current_time"],
-            time_limit   = time_limit,
-            verbose      = verbose,
+        model, entry, dep, delay, y, x, _ = build_and_solve_model(
+            T                     = instance["T"],
+            S                     = instance["S"],
+            Ss                    = instance["Ss"],
+            Sl                    = instance["Sl"],
+            path                  = instance["path"],
+            sched_entry           = instance["sched_entry"],
+            sched_exit            = instance["sched_exit"],
+            runtime               = instance["runtime"],
+            dwell                 = instance["dwell"],
+            conflicts             = instance["conflicts"],
+            occupied              = instance["occupied"],
+            fixed_entry           = instance["fixed_entry"],
+            expected_exit         = instance["expected_exit"],
+            halts                 = instance["halts"],
+            weights               = instance["weights"],
+            L                     = instance["L"],
+            current_time          = instance["current_time"],
+            time_limit            = time_limit,
+            verbose               = verbose,
+            platform_alternatives = instance.get("platform_alternatives", {}),
         )
-        return parse_solution(model, entry, dep, delay)
+        return parse_solution(model, entry, dep, delay, x=x)
 
     except Exception as e:
         print(f"[solver] Gurobi error: {e}")

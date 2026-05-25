@@ -16,6 +16,7 @@ import logging
 import pandas as pd
 
 from data.combine_timetable import combine_timetables
+from data.timetable import get_platform_alternatives
 from domain import Train, TrainType, TrainSubtype
 from domain import Segment, SegmentType
 from domain import Timetable, ScheduledTimes
@@ -205,7 +206,9 @@ def load_timetable(df: pd.DataFrame) -> Timetable:
 # Convenience functie
 # =============================================================================
 
-def load_all(n_freight: int) -> tuple[dict[int, Train], dict[str, Segment], Timetable]:
+def load_all(
+    n_freight: int,
+) -> tuple[dict[int, Train], dict[str, Segment], Timetable, dict[tuple[int, str], list[str]]]:
     """
     Laadt de gecombineerde timetable en construeert alle domain objecten.
 
@@ -215,16 +218,27 @@ def load_all(n_freight: int) -> tuple[dict[int, Train], dict[str, Segment], Time
 
     Returns
     -------
-    (trains, segments, timetable)
+    (trains, segments, timetable, platform_alternatives)
+
+    platform_alternatives : dict {(train_id, planned_seg): [alt_seg, ...]}
+        Platform-alternatieven voor retracking. Alleen voor stations waarbij
+        assign_platforms greedy interval scheduling gebruikt (alle platforms
+        als vrije pool). Brussel-Noord is uitgesloten.
 
     Gebruik
     -------
-    trains, segments, timetable = load_all(n_freight=300)
+    trains, segments, timetable, platform_alternatives = load_all(n_freight=300)
     """
     df = combine_timetables(n_freight)
 
-    trains    = load_trains(df)
-    segments  = load_segments(df)
-    timetable = load_timetable(df)
+    trains                = load_trains(df)
+    segments              = load_segments(df)
+    timetable             = load_timetable(df)
+    platform_alternatives = get_platform_alternatives(df)
 
-    return trains, segments, timetable
+    logger.info(
+        f"Platform-alternatieven geladen: "
+        f"{len(platform_alternatives)} (train, segment) paren met ≥1 alternatief"
+    )
+
+    return trains, segments, timetable, platform_alternatives
