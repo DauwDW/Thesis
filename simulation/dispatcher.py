@@ -223,7 +223,13 @@ class Dispatcher:
             def key(idx_tid):
                 idx, tid = idx_tid
                 try:
-                    sched = self._timetable.scheduled_entry(tid, segment_id)
+                    # segment_id kan een gekozen platform zijn na retracking;
+                    # de timetable is geïndexeerd op geplande segmenten.
+                    planned = (
+                        state.get_planned_seg_for(tid, segment_id)
+                        if state is not None else segment_id
+                    )
+                    sched = self._timetable.scheduled_entry(tid, planned)
                 except (KeyError, AttributeError):
                     sched = None
                 return (sched if sched is not None else float("inf"), idx)
@@ -258,9 +264,9 @@ class Dispatcher:
         if not train.halts_at(segment_id):
             return entry_time
         
-        mip_exit = state.mip_exit_for(train_id, segment_id)
-        if mip_exit is not None:
-            return mip_exit
+        # mip_exit = state.mip_exit_for(train_id, segment_id)
+        # if mip_exit is not None:
+        #     return mip_exit
 
         # logger.debug(
         #     "fallback naar scheduled_exit voor dwell-segment train=%s seg=%s "

@@ -322,17 +322,20 @@ class Simulator:
                 remaining = self._state.remaining_path(train_id)
                 if not remaining:
                     continue
-                # remaining[0] is het GEKOZEN platform (na retracking);
-                # seg_schedule is geïndexeerd op geplande segmenten.
+                # remaining[0] is het GEKOZEN segment (na eventuele retracking).
+                # seg_schedule is geïndexeerd op GEKOZEN segmenten (solution.entry
+                # gebruikt de remaining_path die al gekozen segmenten bevat).
                 first_seg_chosen  = remaining[0]
                 first_seg_planned = self._state.get_planned_seg_for(
                     train_id, first_seg_chosen
                 )
-                mip_entry = seg_schedule.get(first_seg_planned, (None, None))[0]
+                # Zoek op gekozen segment: seg_schedule gebruikt gekozen sleutels
+                mip_entry = seg_schedule.get(first_seg_chosen, (None, None))[0]
                 if mip_entry is None:
                     continue
 
                 # scheduled_entry als ondergrens — opzoeken via gepland segment
+                # (timetable is geïndexeerd op geplande segmenten)
                 sched_entry = self._timetable.scheduled_entry(
                     train_id, first_seg_planned
                 )
@@ -344,11 +347,11 @@ class Simulator:
 
             # ---- Actief ----
             else:
-                # current_seg kan een gekozen platform zijn; seg_schedule gebruikt geplande sleutels
-                current_seg_planned = self._state.get_planned_seg_for(
-                    train_id, current_seg
-                )
-                mip_dep_curr = seg_schedule.get(current_seg_planned, (None, None))[1]
+                # current_seg is het GEKOZEN segment (opgeslagen door record_entry).
+                # seg_schedule is geïndexeerd op GEKOZEN segmenten — gebruik
+                # current_seg direct, niet de geplande versie.
+                # (get_planned_seg_for is alleen nodig voor timetable-lookups.)
+                mip_dep_curr = seg_schedule.get(current_seg, (None, None))[1]
                 if mip_dep_curr is None:
                     continue
 
