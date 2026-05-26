@@ -59,7 +59,7 @@ import logging
 import numpy as np
 from domain import SegmentType
 
-from simulation.simulator import sample_duration, _seconds_to_period
+from simulation.simulator import sample_duration
 from config.settings import (
     MC_DELAY_PER_TRAIN,
     MC_ITERATIONS,

@@ -52,7 +52,7 @@ SOLVER_TIMEOUT_SECONDS = 60
 SOLVER_MIP_GAP         = 0.00000001
 
 RESCHEDULING_HORIZON = 3600 # normaal 7200
-CONFLICT_WINDOW = 1800 # normaal 1200
+CONFLICT_WINDOW = 1200 # normaal 1200
 
 # Tijdvenster voor retracking-conflicten (z_alt/y_alt variabelen).
 # Kleiner dan CONFLICT_WINDOW om model-explosie te voorkomen bij drukke periodes.
