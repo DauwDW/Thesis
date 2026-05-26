@@ -330,14 +330,19 @@ def _assign_tracks_by_overlap(
 ) -> None:
     """
     Wijst individuele platforms toe binnen één eilandperron via greedy
-    interval scheduling (klassiek 'earliest-available machine first').
-    Modifieert df['PERRON'] in-place.
+    interval scheduling met rotatie.  Modifieert df['PERRON'] in-place.
 
     Volgorde: treinen op ENTRY_SECONDS oplopend, met TRAIN_NO als
-    deterministische tiebreak. Per trein wordt het platform gekozen
-    dat het vroegst vrijkomt; bij gelijkstand alfabetisch eerste.
-    Als dat platform nog bezet is op moment van aankomst, wordt het
-    conflict gelogd en de trein krijgt alsnog het minst-bezette spoor.
+    deterministische tiebreak.  Per trein:
+
+    •  Als er ≥ 1 vrij platform is (free_from ≤ entry): kies het vrije
+       platform dat het langst niet is gebruikt (LRU-rotatie).  Zo worden
+       opeenvolgende treinen zoveel mogelijk over alle beschikbare sporen
+       gespreid in plaats van steeds het eerste vrije spoor te hergebruiken.
+
+    •  Als alle platforms bezet zijn: kies het platform dat het vroegst
+       vrijkomt (klassiek 'earliest-available machine first'); log een
+       capaciteitsconflict.
     """
     groep_mask   = mask & (df['PERRON_GROEP'] == perron_groep)
     invalid_mask = groep_mask & (df['EXIT_SECONDS'] <= df['ENTRY_SECONDS'])
@@ -359,16 +364,26 @@ def _assign_tracks_by_overlap(
           .sort_values(['ENTRY_SECONDS', 'TRAIN_NO'])
           .index
     )
-    free_from = {p: -1 for p in sorted(platforms)}
+    # Bewaar de volgorde die de caller aanlevert (bv. numerisch gesorteerd).
+    # Alfabetische sort zou "platform 10" vóór "platform 7" plaatsen.
+    ordered_platforms = list(platforms)
+    free_from         = {p: -1 for p in ordered_platforms}
+    last_used_order   = {p: i for i, p in enumerate(ordered_platforms)}  # LRU counter
+    assign_counter   = len(ordered_platforms)  # starts above initial values
 
     for idx in sorted_idx:
         entry = df.at[idx, 'ENTRY_SECONDS']
         exit_ = df.at[idx, 'EXIT_SECONDS']
         diagnostics.log_assignment(station, perron_groep)
 
-        chosen = min(free_from, key=lambda p: (free_from[p], p))
+        free_now = [p for p in ordered_platforms if free_from[p] <= entry]
 
-        if free_from[chosen] > entry:
+        if free_now:
+            # LRU-rotatie: kies het vrije platform dat het langst niet gebruikt is
+            chosen = min(free_now, key=lambda p: last_used_order[p])
+        else:
+            # Alle platforms bezet: kies degene die het vroegst vrijkomt
+            chosen = min(free_from, key=lambda p: (free_from[p], p))
             overlap = free_from[chosen] - entry
             diagnostics.log_conflict(station, perron_groep)
             logger.debug(
@@ -376,8 +391,10 @@ def _assign_tracks_by_overlap(
                 f"{chosen} — overlap van {overlap:.0f}s"
             )
 
-        df.at[idx, 'PERRON']  = chosen
-        free_from[chosen]     = exit_
+        df.at[idx, 'PERRON']          = chosen
+        free_from[chosen]             = exit_
+        last_used_order[chosen]       = assign_counter
+        assign_counter               += 1
         
 
 def assign_platforms(
@@ -386,21 +403,36 @@ def assign_platforms(
     """
     Verfijnt SECTION voor station-segmenten door individueel platform toe te voegen.
 
-    Methodologie per stationstype:
-    - Vaste platform-lijn toewijzing: Brussel-Noord, Jette, Bockstael,
-      Brussel-Schuman, Brussel-West, Simonis, Thurn en Taxis,
-      Vorst-Oost, Zellik, Sint-Agatha-Berchem
-    - Tijdsoverlap via greedy interval scheduling: Brussel-Centraal,
-      Brussel-Congres, Brussel-Kapellekerk, Anderlecht
-    - RELATION_DIRECTION als proxy: Schaarbeek, Brussel-Zuid
+    Methodologie per stationstype
+    ──────────────────────────────
+    Vaste richting-toewijzing (PREVIOUS_SECTION / lijncode):
+        Brussel-Noord, Jette, Bockstael, Brussel-West, Simonis, Thurn en Taxis
+
+    Greedy interval scheduling met LRU-rotatie (1 pool):
+        Brussel-Centraal (6), Brussel-Congres (4), Brussel-Kapellekerk (4),
+        Anderlecht (4), Brussel-Schuman (4)
+
+    Greedy interval scheduling met LRU-rotatie (meerdere groepen):
+        Brussel-Zuid  — groep 'intl' (platforms 1–6 voor EURST/ICE)
+                      — groep 'nationaal' (platforms 7–21 voor overige types)
+        Schaarbeek    — per lijncode (prefix RELATION_DIRECTION) 2 sporen
+
+    Vaste richting-toewijzing (PREVIOUS_STATION), momenteel dead code:
+        Vorst-Oost, Zellik, Sint-Agatha-Berchem
+        (geen WITHIN-STATION-DWELL segmenten in huidige dataset)
+
+    Opmerking: assign_platforms mag slechts éénmaal worden aangeroepen per
+    dataset.  Aanroep in Build_Timetable.ipynb is verwijderd; deze functie
+    wordt uitsluitend aangeroepen via combine_timetable.py op de volledige
+    gecombineerde timetable (passenger + freight).
     """
     df = df.copy()
     diagnostics = TrackAssignmentDiagnostics()
 
     df['PREVIOUS_SECTION'] = df.groupby('TRAIN_NO')['SECTION'].shift(1)
     df['NEXT_SECTION']     = df.groupby('TRAIN_NO')['SECTION'].shift(-1)
-    df['PREVIOUS_SECTION'] = df['PREVIOUS_SECTION'].str.split(':').str[0]
-    df['NEXT_SECTION']     = df['NEXT_SECTION'].str.split(':').str[0]
+    df['PREVIOUS_SECTION'] = df['PREVIOUS_SECTION'].astype(str).str.split(':').str[0].where(df['PREVIOUS_SECTION'].notna())
+    df['NEXT_SECTION']     = df['NEXT_SECTION'].astype(str).str.split(':').str[0].where(df['NEXT_SECTION'].notna())
     df['PREVIOUS_STATION'] = df.groupby('TRAIN_NO')['SOURCE'].shift(1)
     df['NEXT_STATION']     = df.groupby('TRAIN_NO')['TARGET'].shift(-1)
     df['PERRON']           = None
@@ -408,48 +440,79 @@ def assign_platforms(
 
     # -------------------------------------------------------------------------
     # BRUSSEL-NOORD
-    # Vaste platform-lijn toewijzing op basis van aankomende/vertrekkende lijn.
+    # Perrontoewijzing op basis van spoorlijncontext.
     # Bron: domeinkennis spoorinfrastructuur Brussel-Noord (Mariska, 2024).
     #
     # Twee gevallen:
-    #   Geval 1: PREVIOUS_SECTION is een echte lijncode (50, 36N, 25, ...)
-    #            → trein komt van buiten het station
-    #            → gebruik bxl_noord_in: aankomende lijn bepaalt platform
-    #   Geval 2: PREVIOUS_SECTION is een interne code (0-x)
-    #            → trein komt van intern (vorige dwell of passing)
-    #            → gebruik NEXT_SECTION + bxl_noord_out: vertrekkende lijn bepaalt platform
+    #   Geval 1: PREVIOUS_SECTION is een klassieke lijncode
+    #            (50, 36N, 25, ...)
+    #            → trein komt Brussel-Noord binnen via een externe spoorlijn
+    #            → gebruik aankomende lijn voor perrontoewijzing
     #
-    # Assumptie: elke spoorlijn heeft een vast toegewezen platform voor
-    # aankomst en een vast platform voor vertrek.
+    #   Geval 2: PREVIOUS_SECTION behoort tot lijn 0
+    #            (0-1, 0-2, ...)
+    #            → trein komt via de Noord-Zuidverbinding
+    #            → gebruik NEXT_SECTION zodat de uitgaande spoorlijn
+    #              het vertrekperron bepaalt
+    #
+    #   Geval 3: zowel PREVIOUS_SECTION als NEXT_SECTION behoren tot lijn 0
+    #            → geen bruikbare externe lijninformatie beschikbaar
+    #            → wijs platform toe via tijdsoverlap scheduling
+    #
+    # Assumptie:
+    #   Klassieke spoorlijnen hebben vaste aankomst- en vertrekplatforms.
+    #   Voor lijn 0-bewegingen zonder externe lijncontext wordt fallback
+    #   scheduling gebruikt over alle beschikbare platforms.
     # -------------------------------------------------------------------------
+
     bxl_noord_in = {
         '50': 'platform 1', '36N': 'platform 3', '25N': 'platform 3',
         '161': 'platform 7', '161N': 'platform 7', '161-2': 'platform 7',
         '36': 'platform 9', '27': 'platform 9', '25': 'platform 11',
     }
+
     bxl_noord_out = {
         '50': 'platform 2', '36N': 'platform 4', '25N': 'platform 4',
         '161': 'platform 8', '161N': 'platform 8', '161-2': 'platform 8',
         '36': 'platform 10', '27': 'platform 10', '25': 'platform 12',
     }
 
-    mask = (df['SOURCE'] == 'BRUSSEL-NOORD') & (df['TARGET'] == 'BRUSSEL-NOORD')
-    prev_is_internal = df['PREVIOUS_SECTION'].str.startswith('0-', na=False)
-    next_is_internal = df['NEXT_SECTION'].str.startswith('0-', na=False)
+    mask = (
+        (df['SOURCE'] == 'BRUSSEL-NOORD') &
+        (df['TARGET'] == 'BRUSSEL-NOORD')
+    )
 
-    df.loc[mask & ~prev_is_internal, 'PERRON'] = \
-        df.loc[mask & ~prev_is_internal, 'PREVIOUS_SECTION'].map(bxl_noord_in)
-    df.loc[mask & prev_is_internal & ~next_is_internal, 'PERRON'] = \
-        df.loc[mask & prev_is_internal & ~next_is_internal, 'NEXT_SECTION'].map(bxl_noord_out)
+    prev_is_line0 = df['PREVIOUS_SECTION'].str.startswith('0-', na=False)
+    next_is_line0 = df['NEXT_SECTION'].str.startswith('0-', na=False)
 
-    both_internal = mask & prev_is_internal & next_is_internal
-    df.loc[both_internal, 'PERRON_GROEP'] = 'alle'
+    # Geval 1: aankomende klassieke spoorlijn bepaalt platform
+    df.loc[mask & ~prev_is_line0, 'PERRON'] = (
+        df.loc[mask & ~prev_is_line0, 'PREVIOUS_SECTION']
+        .map(bxl_noord_in)
+    )
+
+    # Geval 2: trein komt via lijn 0 → uitgaande lijn bepaalt platform
+    df.loc[mask & prev_is_line0 & ~next_is_line0, 'PERRON'] = (
+        df.loc[mask & prev_is_line0 & ~next_is_line0, 'NEXT_SECTION']
+        .map(bxl_noord_out)
+    )
+
+    # Geval 3: volledig binnen lijn 0-context → overlap scheduling
+    both_line0 = mask & prev_is_line0 & next_is_line0
+
+    df.loc[both_line0, 'PERRON_GROEP'] = 'alle'
+
     _assign_tracks_by_overlap(
-        df, both_internal, 'alle',
-        ['platform 1', 'platform 2', 'platform 3', 'platform 4',
-         'platform 5', 'platform 6', 'platform 7', 'platform 8',
-         'platform 9', 'platform 10', 'platform 11', 'platform 12'],
-        'BRUSSEL-NOORD', diagnostics
+        df,
+        both_line0,
+        'alle',
+        [
+            'platform 1', 'platform 2', 'platform 3', 'platform 4',
+            'platform 5', 'platform 6', 'platform 7', 'platform 8',
+            'platform 9', 'platform 10', 'platform 11', 'platform 12'
+        ],
+        'BRUSSEL-NOORD',
+        diagnostics
     )
 
     # -------------------------------------------------------------------------
@@ -521,19 +584,66 @@ def assign_platforms(
 
     # -------------------------------------------------------------------------
     # BRUSSEL-ZUID
-    # 22 platforms — RELATION_DIRECTION als proxy.
+    # 22 platforms verdeeld in twee groepen op basis van TRAIN_TYPE:
+    #   - platforms  1– 6: Eurostar (EURST) en ICE
+    #   - platforms  7–21: alle overige treintypen (IC, L, INT, …)
+    # Binnen elke groep: greedy interval scheduling met LRU-rotatie zodat
+    # opeenvolgende treinen over alle beschikbare sporen worden gespreid.
     # Bron: PerronAnalyse-Brussel.pdf
     # -------------------------------------------------------------------------
-    mask = (df['SOURCE'] == 'BRUSSEL-ZUID') & (df['TARGET'] == 'BRUSSEL-ZUID')
-    df.loc[mask, 'PERRON'] = df.loc[mask, 'RELATION_DIRECTION']
+    mask_z = (df['SOURCE'] == 'BRUSSEL-ZUID') & (df['TARGET'] == 'BRUSSEL-ZUID')
+
+    intl_types  = {'EURST', 'ICE'}
+    mask_z_intl = mask_z & df['TRAIN_TYPE'].isin(intl_types)
+    mask_z_rest = mask_z & ~df['TRAIN_TYPE'].isin(intl_types)
+
+    df.loc[mask_z_intl, 'PERRON_GROEP'] = 'intl'
+    _assign_tracks_by_overlap(
+        df, mask_z_intl, 'intl',
+        [f'platform {i}' for i in range(1, 7)],
+        'BRUSSEL-ZUID', diagnostics,
+    )
+
+    df.loc[mask_z_rest, 'PERRON_GROEP'] = 'nationaal'
+    _assign_tracks_by_overlap(
+        df, mask_z_rest, 'nationaal',
+        [f'platform {i}' for i in range(7, 22)],
+        'BRUSSEL-ZUID', diagnostics,
+    )
 
     # -------------------------------------------------------------------------
     # SCHAARBEEK
-    # 13 platforms, variabele toewijzing — RELATION_DIRECTION als proxy.
-    # Bron: PerronAnalyse-Brussel.pdf
+    # 13 platforms.  Per lijn (prefix van RELATION_DIRECTION, bv. "IC 12")
+    # worden 2 platforms ingezet via greedy interval scheduling met LRU-rotatie.
+    # Zo deelt elke lijn een eigen paar sporen en worden opeenvolgende treinen
+    # van die lijn steeds afgewisseld.
+    #
+    # Opmerking: in de huidige passenger-dataset heeft Schaarbeek geen
+    # WITHIN-STATION-DWELL segmenten (treinen rijden er door of starten er).
+    # De logica is correcte dode code die activeert zodra dwell-data beschikbaar
+    # is (bv. na uitbreiding met goederentreinen die daar stoppen).
     # -------------------------------------------------------------------------
-    mask = (df['SOURCE'] == 'SCHAARBEEK') & (df['TARGET'] == 'SCHAARBEEK')
-    df.loc[mask, 'PERRON'] = df.loc[mask, 'RELATION_DIRECTION']
+    mask_sch = (df['SOURCE'] == 'SCHAARBEEK') & (df['TARGET'] == 'SCHAARBEEK')
+
+    if mask_sch.any():
+        # Extraheer lijncode: eerste token vóór ':' in RELATION_DIRECTION
+        # bv. "IC 12: KORTRIJK -> WELKENRAEDT"  →  "IC 12"
+        line_codes = (
+            df.loc[mask_sch, 'RELATION_DIRECTION']
+            .fillna('ONBEKEND')
+            .str.split(':')
+            .str[0]
+            .str.strip()
+        )
+        df.loc[mask_sch, 'PERRON_GROEP'] = line_codes
+
+        for line_code in line_codes.unique():
+            sub_mask = mask_sch & (df['PERRON_GROEP'] == line_code)
+            _assign_tracks_by_overlap(
+                df, sub_mask, line_code,
+                [f'{line_code} spoor 1', f'{line_code} spoor 2'],
+                'SCHAARBEEK', diagnostics,
+            )
 
     # -------------------------------------------------------------------------
     # JETTE
@@ -565,12 +675,23 @@ def assign_platforms(
         df.loc[mask, 'PREVIOUS_STATION'] == 'JETTE', 'platform 1', 'platform 2'
     )
 
-    mask = (df['SOURCE'] == 'BRUSSEL-SCHUMAN') & (df['TARGET'] == 'BRUSSEL-SCHUMAN')
-    df.loc[mask, 'PERRON'] = np.where(
-        df.loc[mask, 'PREVIOUS_STATION'] == 'BRUSSEL-NOORD', 'platform 1',
-        np.where(df.loc[mask, 'PREVIOUS_STATION'] == 'BRUSSEL-LUXEMBURG', 'platform 2',
-        np.where(df.loc[mask, 'PREVIOUS_STATION'] == 'BOCKSTAEL', 'platform 3',
-        'platform 4'))
+    # -------------------------------------------------------------------------
+    # BRUSSEL-SCHUMAN
+    # 4 platforms (eilandperron op lijn 161-2).  Alle 4 als één pool via
+    # greedy interval scheduling met LRU-rotatie.
+    #
+    # Opmerking: in de huidige passenger-dataset heeft Brussel-Schuman geen
+    # WITHIN-STATION-DWELL segmenten — treinen rijden er door of starten er.
+    # De logica is correcte dode code die activeert zodra dwell-data beschikbaar
+    # is.
+    # Bron: PerronAnalyse-Brussel.pdf
+    # -------------------------------------------------------------------------
+    mask_bsch = (df['SOURCE'] == 'BRUSSEL-SCHUMAN') & (df['TARGET'] == 'BRUSSEL-SCHUMAN')
+    df.loc[mask_bsch, 'PERRON_GROEP'] = 'alle'
+    _assign_tracks_by_overlap(
+        df, mask_bsch, 'alle',
+        ['platform 1', 'platform 2', 'platform 3', 'platform 4'],
+        'BRUSSEL-SCHUMAN', diagnostics,
     )
 
     mask = (df['SOURCE'] == 'BRUSSEL-WEST') & (df['TARGET'] == 'BRUSSEL-WEST')
@@ -588,19 +709,32 @@ def assign_platforms(
         df.loc[mask, 'PREVIOUS_STATION'] == 'SIMONIS', 'platform 1', 'platform 2'
     )
 
-    mask = (df['SOURCE'] == 'VORST-OOST') & (df['TARGET'] == 'VORST-OOST')
-    df.loc[mask, 'PERRON'] = np.where(
-        df.loc[mask, 'PREVIOUS_STATION'] == 'UKKEL-STALLE', 'platform 1', 'platform 2'
+    # -------------------------------------------------------------------------
+    # VORST-OOST  ·  ZELLIK  ·  SINT-AGATHA-BERCHEM
+    # Elk 2 platforms, toewijzing per rijrichting via PREVIOUS_STATION.
+    #
+    # Opmerking: in de huidige passenger-dataset hebben deze drie stations
+    # geen WITHIN-STATION-DWELL segmenten (treinen rijden er door of starten
+    # er als SOURCE).  De logica hieronder is correcte dode code; ze activeert
+    # zodra dwell-data beschikbaar is.
+    #
+    #   VORST-OOST:        komend van UKKEL-STALLE → platform 1, anders → platform 2
+    #   ZELLIK:            komend van JETTE         → platform 2, anders → platform 1
+    #   SINT-AGATHA-BERCHEM: komend van JETTE       → platform 2, anders → platform 1
+    # -------------------------------------------------------------------------
+    mask_vo = (df['SOURCE'] == 'VORST-OOST') & (df['TARGET'] == 'VORST-OOST')
+    df.loc[mask_vo, 'PERRON'] = np.where(
+        df.loc[mask_vo, 'PREVIOUS_STATION'] == 'UKKEL-STALLE', 'platform 1', 'platform 2'
     )
 
-    mask = (df['SOURCE'] == 'ZELLIK') & (df['TARGET'] == 'ZELLIK')
-    df.loc[mask, 'PERRON'] = np.where(
-        df.loc[mask, 'PREVIOUS_STATION'] == 'JETTE', 'platform 2', 'platform 1'
+    mask_ze = (df['SOURCE'] == 'ZELLIK') & (df['TARGET'] == 'ZELLIK')
+    df.loc[mask_ze, 'PERRON'] = np.where(
+        df.loc[mask_ze, 'PREVIOUS_STATION'] == 'JETTE', 'platform 2', 'platform 1'
     )
 
-    mask = (df['SOURCE'] == 'SINT-AGATHA-BERCHEM') & (df['TARGET'] == 'SINT-AGATHA-BERCHEM')
-    df.loc[mask, 'PERRON'] = np.where(
-        df.loc[mask, 'PREVIOUS_STATION'] == 'JETTE', 'platform 2', 'platform 1'
+    mask_sab = (df['SOURCE'] == 'SINT-AGATHA-BERCHEM') & (df['TARGET'] == 'SINT-AGATHA-BERCHEM')
+    df.loc[mask_sab, 'PERRON'] = np.where(
+        df.loc[mask_sab, 'PREVIOUS_STATION'] == 'JETTE', 'platform 2', 'platform 1'
     )
 
     df['SECTION_MACRO'] = df['SECTION']
@@ -623,68 +757,93 @@ def assign_platforms(
 
 
 # =============================================================================
-# Platform-alternatieven voor retracking
+# Platform-alternatieven voor MIP retracking
 # =============================================================================
 
-# Stations waarvan de platforms NIET als vrije pool worden behandeld.
-# Brussel-Noord: lijn-gemapte platforms (lijn 50 → platform 1, enz.) — geen vrije keuze.
-_RETRACK_EXCLUDED: set[str] = {"BRUSSEL-NOORD"}
+# Stations die volledig uitgesloten zijn van retracking
+# (lijn-gemapte platforms of richtings-specifieke toewijzing)
+_RETRACK_EXCLUDED = {
+    "BRUSSEL-NOORD",       # lijn-gemapte platforms
+    "JETTE",               # richtings-specifiek (2 vaste platforms)
+    "BOCKSTAEL",           # richtings-specifiek
+    "BRUSSEL-WEST",        # richtings-specifiek
+    "SIMONIS",             # richtings-specifiek
+    "THURN EN TAXIS",      # richtings-specifiek
+}
 
 
-def get_platform_alternatives(
-    df: pd.DataFrame,
-    excluded: set[str] | None = None,
-) -> dict[tuple[int, str], list[str]]:
+def get_platform_alternatives(df: pd.DataFrame) -> dict[tuple[int, str], list[str]]:
     """
-    Scant de combined timetable op stations met '-- platform X' segmenten
-    en retourneert voor elke (train_id, planned_segment) de alternatieven.
+    Retourneert voor elke retrackbare (train_id, planned_segment) de lijst
+    van alternatieve segmenten (exclusief het geplande segment zelf).
 
-    Alleen stations waarbij assign_platforms alle platforms als één pool
-    behandelt (greedy interval scheduling) hebben zinvolle alternatieven.
-    Stations met richtings-specifieke segmentnamen (Brussel-Zuid, Schaarbeek)
-    bevatten geen '-- platform X' segmenten en vallen automatisch buiten scope.
+    Actieve pools (top-3 bottleneck stations, zie RETRACK_STATIONS in settings):
+    - BRUSSEL-CENTRAAL : 1 vrije pool (platforms 1-6)
+    - BRUSSEL-CONGRES  : 1 vrije pool (platforms 1-4)
+    - BRUSSEL-ZUID     : nationaal pool (platforms 7-21)
+
+    Stations met "-- platform N" segmenten maar buiten de top-3:
+    - BRUSSEL-KAPELLEKERK : 4 platforms, uitgesloten via RETRACK_STATIONS
+
+    Niet retrackbaar (geen "-- platform N" segmentnamen of lijn-gebonden):
+    - BRUSSEL-NOORD, SCHAARBEEK, Jette, Bockstael, Brussel-West, Simonis, Thurn en Taxis
 
     Parameters
     ----------
-    df       : combined timetable DataFrame (output van combine_timetables)
-    excluded : set van stationnamen die uitgesloten worden; default = _RETRACK_EXCLUDED
+    df : pd.DataFrame
+        Combined gold timetable (bevat SECTION en TYPE kolommen).
 
     Returns
     -------
-    dict {(train_id, planned_segment_id): [alt_segment_id, ...]}
-    planned_segment_id is NIET opgenomen in de lijst van alternatieven.
+    dict {(train_id: int, planned_segment: str): [alt_segment, ...]}
     """
     import re
+    from collections import defaultdict
+    from config.settings import RETRACK_STATIONS
 
-    if excluded is None:
-        excluded = _RETRACK_EXCLUDED
+    # Alleen rijen met daadwerkelijke station-verblijfstijden
+    dwell_mask = df['TYPE'].isin(['WITHIN-STATION-DWELL', 'WITHIN-STATION-PASSING'])
+    dwell_df   = df.loc[dwell_mask].copy()
 
-    pat = re.compile(r'^(.+?) -- platform \d')
+    if dwell_df.empty:
+        return {}
 
-    # Verzamel alle platform-X segmenten per station
-    station_pools: dict[str, set[str]] = {}
-    station_mask = df['TYPE'].isin(['WITHIN-STATION-DWELL', 'WITHIN-STATION-PASSING'])
-    for seg in df.loc[station_mask, 'SECTION'].unique():
-        m = pat.match(seg)
-        if m:
-            station = m.group(1)
-            if station not in excluded:
-                station_pools.setdefault(station, set()).add(seg)
+    # --- Bouw station-pools ---
+    # Enkel vrije pools met "STATION -- platform N" naamgeving.
+    # Pool-label = stationsnaam -> alle platforms in die pool zijn uitwisselbaar.
 
-    # Stations met slechts één segment hebben geen alternatief
-    station_pools = {s: pool for s, pool in station_pools.items() if len(pool) > 1}
+    seg_to_pool: dict[str, str] = {}
 
-    # Voor elke (train, station-segment) in scope: alternatieven = pool minus gepland
-    result: dict[tuple[int, str], list[str]] = {}
-    for _, row in df.loc[station_mask].iterrows():
-        seg = row['SECTION']
-        m = pat.match(seg)
+    # Patroon: "STATION -- platform N" (N = een of meer cijfers, niets daarna)
+    pat_platform = re.compile(r'^(.+?) -- platform \d+$')
+
+    for seg in dwell_df['SECTION'].unique():
+        seg_str = str(seg)
+        m = pat_platform.match(seg_str)
         if not m:
             continue
         station = m.group(1)
-        if station not in station_pools:
+        if station in _RETRACK_EXCLUDED:
             continue
-        alts = sorted(station_pools[station] - {seg})
+        # Whitelist-filter: alleen stations in RETRACK_STATIONS (None = alles)
+        if RETRACK_STATIONS is not None and station not in RETRACK_STATIONS:
+            continue
+        seg_to_pool[seg_str] = station  # pool-label = stationsnaam
+
+    # Verwijder pools met slechts 1 segment (geen alternatief mogelijk)
+    pool_to_segs: dict[str, list[str]] = defaultdict(list)
+    for seg, pool in seg_to_pool.items():
+        pool_to_segs[pool].append(seg)
+    pool_to_segs = {p: sorted(segs) for p, segs in pool_to_segs.items() if len(segs) > 1}
+
+    # --- Bouw result dict ---
+    result: dict[tuple[int, str], list[str]] = {}
+    for _, row in dwell_df.iterrows():
+        seg  = str(row['SECTION'])
+        pool = seg_to_pool.get(seg)
+        if pool is None or pool not in pool_to_segs:
+            continue
+        alts = [s for s in pool_to_segs[pool] if s != seg]
         if alts:
             result[(int(row['TRAIN_NO']), seg)] = alts
 

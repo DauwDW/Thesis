@@ -374,6 +374,22 @@ def run_simulation(
     status = "DEADLOCK" if deadlock_detected else "Done"
     print(f"{status}. {len(df)} rows, {df['train_id'].nunique()} trains.")
     print(f"Controller: {controller_summary}")
+
+    # --- Per-station platform-switch analyse (voor top-3 selectie) ---
+    if use_retracking:
+        from collections import Counter
+        station_switches: Counter = Counter()
+        for train_id, choices in state._platform_choices.items():
+            for planned_seg, chosen_seg in choices.items():
+                if chosen_seg != planned_seg:
+                    station = planned_seg.split(' -- ')[0]
+                    station_switches[station] += 1
+        if station_switches:
+            print("Platform switches per station:")
+            for station, count in station_switches.most_common():
+                print(f"  {station}: {count}")
+        else:
+            print("Geen platform switches.")
     #!!! nieuw
     metrics = compute_metrics(df, trains)
     print(

@@ -52,7 +52,7 @@ SOLVER_TIMEOUT_SECONDS = 60
 SOLVER_MIP_GAP         = 0.00000001
 
 RESCHEDULING_HORIZON = 3600 # normaal 7200
-CONFLICT_WINDOW = 1200 # normaal 1200
+CONFLICT_WINDOW = 1800 # normaal 1800
 
 # Tijdvenster voor retracking-conflicten (z_alt/y_alt variabelen).
 # Kleiner dan CONFLICT_WINDOW om model-explosie te voorkomen bij drukke periodes.
@@ -64,6 +64,19 @@ RETRACK_CONFLICT_WINDOW = 600  # 10 minuten
 # Hogere waarden geven meer retracking-vrijheid maar vergroot het MIP.
 MAX_RETRACK_VISITS_PER_PLATFORM = 6
 
+# Stations waarvoor retracking actief is.
+# Pilotrun (seed=42, periodic 1800s) gaf volgende verdeling:
+#   BRUSSEL-ZUID        : 194 switches  (top 1)
+#   BRUSSEL-CENTRAAL    : 174 switches  (top 2)
+#   BRUSSEL-CONGRES     : 167 switches  (top 3)
+#   BRUSSEL-KAPELLEKERK : 166 switches  (top 4)
+#
+# Alle 4 stations meenemen: MIP lost alle 47 reschedules optimaal op in 3.2s totaal.
+# Alleen top-3 (zonder Kapellekerk): deadlock bij t≈71 000s doordat Kapellekerk
+# zonder retracking congestie opbouwt die de solver niet kan oplossen.
+# Conclusie: gebruik alle 4 stations (None = alles toelaten).
+RETRACK_STATIONS: set[str] | None = None
+
 # =============================================================================
 # Dispatcher prioriteitsveroudering
 # =============================================================================
@@ -71,7 +84,7 @@ MAX_RETRACK_VISITS_PER_PLATFORM = 6
 # valt de dispatcher terug op scheduled_entry (timetable-volgorde).
 # Kies een waarde ≥ controller_freq zodat de prioriteit niet veroudert
 # vóór de volgende geplande reschedule.
-DISPATCHER_PRIORITY_TTL: float = 900.0
+DISPATCHER_PRIORITY_TTL: float = 1200.0
 
 # =============================================================================
 # Monte Carlo trigger
