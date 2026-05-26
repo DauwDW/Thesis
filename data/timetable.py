@@ -613,21 +613,27 @@ def assign_platforms(
 
     # -------------------------------------------------------------------------
     # SCHAARBEEK
-    # 13 platforms.  Per lijn (prefix van RELATION_DIRECTION, bv. "IC 12")
-    # worden 2 platforms ingezet via greedy interval scheduling met LRU-rotatie.
-    # Zo deelt elke lijn een eigen paar sporen en worden opeenvolgende treinen
-    # van die lijn steeds afgewisseld.
+    # Per lijncode (prefix van RELATION_DIRECTION, bv. "T2a" of "T2b")
+    # worden 2 sporen ingezet via greedy interval scheduling met LRU-rotatie.
+    # Elke lijncode deelt een eigen paar sporen; opeenvolgende treinen van
+    # dezelfde lijn worden steeds afgewisseld.
     #
-    # Opmerking: in de huidige passenger-dataset heeft Schaarbeek geen
-    # WITHIN-STATION-DWELL segmenten (treinen rijden er door of starten er).
-    # De logica is correcte dode code die activeert zodra dwell-data beschikbaar
-    # is (bv. na uitbreiding met goederentreinen die daar stoppen).
+    # Naamgeving: "SCHAARBEEK -- T2a spoor 1", "SCHAARBEEK -- T2b spoor 2", …
+    # Dit wijkt bewust af van de "-- platform N" conventie omdat T2a en T2b
+    # fysiek verschillende rijweggroepen zijn (eigen aanrijroutes) die NIET
+    # onderling uitwisselbaar zijn.  get_platform_alternatives() sluit ze
+    # daardoor automatisch uit van retracking (patroon matcht niet).
+    #
+    # Experiment (seed=42, periodic 1800 s): samenvoegen tot één pool van 4
+    # en retracking toestaan geeft slechts 5 switches en verhoogt TED_combined
+    # met +786 s door gewijzigde toewijzingsvolgorde.  Per-lijncode toewijzing
+    # blijft de betere keuze.
     # -------------------------------------------------------------------------
     mask_sch = (df['SOURCE'] == 'SCHAARBEEK') & (df['TARGET'] == 'SCHAARBEEK')
 
     if mask_sch.any():
         # Extraheer lijncode: eerste token vóór ':' in RELATION_DIRECTION
-        # bv. "IC 12: KORTRIJK -> WELKENRAEDT"  →  "IC 12"
+        # bv. "T2a: ANTWERPEN → SCHAARBEEK"  →  "T2a"
         line_codes = (
             df.loc[mask_sch, 'RELATION_DIRECTION']
             .fillna('ONBEKEND')
