@@ -338,11 +338,14 @@ class EventDrivenTrigger(BaseTrigger):
                 )
 
                 if segment.seg_type == SegmentType.STATION:         #within-station-passing check zou hier moeten !!!
-                    # C2: niet vroeger vertrekken dan gepland #!!! dit is een hijkel punt blijkbaar
+                    # C2: niet vroeger vertrekken dan gepland.
+                    # seg_id kan een gekozen platform zijn na retracking;
+                    # de timetable is geïndexeerd op geplande segmenten.
+                    planned_seg_id = state.get_planned_seg_for(train_id, seg_id)
                     try:
                         t = max(
                             t + duration,
-                            self._timetable.scheduled_exit(train_id, seg_id),
+                            self._timetable.scheduled_exit(train_id, planned_seg_id),
                         )
                     except KeyError:
                         t += duration
@@ -351,10 +354,13 @@ class EventDrivenTrigger(BaseTrigger):
 
                 seg_free_at[seg_id] = t
 
-            # Vertraging t.o.v. geplande exit van het laatste segment
+            # Vertraging t.o.v. geplande exit van het laatste segment.
+            # last_seg kan een gekozen platform zijn na retracking;
+            # de timetable is geïndexeerd op geplande segmenten.
             last_seg = remaining_path[-1]
+            last_seg_planned = state.get_planned_seg_for(train_id, last_seg)
             try:
-                planned     = self._timetable.scheduled_exit(train_id, last_seg)
+                planned     = self._timetable.scheduled_exit(train_id, last_seg_planned)
                 total_delay += max(0.0, t - planned)
                 n_simulated += 1
             except KeyError:
@@ -363,10 +369,16 @@ class EventDrivenTrigger(BaseTrigger):
         return total_delay / max(1, n_simulated)
 
     def _last_exit(self, state, train, current_time: float) -> float:
-        """actual_exit van het laatste afgeronde segment, of current_time als fallback."""
+        """actual_exit van het laatste afgeronde segment, of current_time als fallback.
+
+        Gebruikt get_chosen_seg() zodat geretrackte platformsegmenten correct
+        opgezocht worden: actual_exit is geïndexeerd op het gekozen (fysieke)
+        segment, niet op het geplande segment uit train.path.
+        """
         for seg_id in reversed(train.path):
+            actual_seg = state.get_chosen_seg(train.id, seg_id)
             try:
-                return state.actual_exit(train.id, seg_id)
+                return state.actual_exit(train.id, actual_seg)
             except KeyError:
                 continue
         return current_time
