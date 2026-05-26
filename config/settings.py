@@ -61,7 +61,7 @@ CONFLICT_WINDOW = 1800 # normaal 1200
 # valt de dispatcher terug op scheduled_entry (timetable-volgorde).
 # Kies een waarde ≥ controller_freq zodat de prioriteit niet veroudert
 # vóór de volgende geplande reschedule.
-DISPATCHER_PRIORITY_TTL: float = 900.0
+DISPATCHER_PRIORITY_TTL: float = 1200.0
 
 # =============================================================================
 # Monte Carlo trigger
