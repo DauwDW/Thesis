@@ -166,8 +166,8 @@ class SystemState:
         self._actual[train_id][segment_id] = (entry, time)
 
         train = self._trains[train_id]
-        last_actual = self.get_chosen_seg(train_id, train.last_segment)
-        if segment_id == last_actual:
+        last_segment = self.get_chosen_seg(train_id, train.last_segment)
+        if segment_id == last_segment:
             self._current_segment[train_id] = None
 
     # ==========================================================================
@@ -259,14 +259,32 @@ class SystemState:
     def set_platform_choice(
         self,
         train_id: int,
-        planned_seg: str,
+        key_seg: str,
         chosen_seg: str,
     ) -> None:
         """
-        Registreer dat train_id chosen_seg gebruikt in plaats van planned_seg.
-        Wordt aangeroepen door simulator._apply_solution na elke MIP-oplossing.
+        Registreer dat train_id chosen_seg gebruikt als platform voor de stop
+        die oorspronkelijk gepland was op de timetable-segmentsleutel.
+
+        key_seg kan het originele geplande segment ZIJN, maar ook een eerder
+        gekozen segment (na een eerste retrack geeft de MIP chosen_seg_1 terug
+        als sleutel; bij een tweede retrack is dat chosen_seg_2, etc.).
+
+        Invariant: _platform_choices is ALTIJD geïndexeerd op het ORIGINELE
+        geplande segment uit de timetable.  We resolven key_seg terug naar het
+        originele planned segment via get_planned_seg_for zodat iteratieve
+        retracks de dict niet laten groeien met chosen-sleutels.
+
+        Bijwerking: als chosen_seg == original_planned (terugschakelen naar het
+        oorspronkelijke platform) wordt de override verwijderd.
         """
-        self._platform_choices[train_id][planned_seg] = chosen_seg
+        #key_seg kan al een eerder gekozen platform zijn!
+        original_planned = self.get_planned_seg_for(train_id, key_seg)
+        if chosen_seg == original_planned:
+            # Terugschakelen naar origineel platform → verwijder de override.
+            self._platform_choices[train_id].pop(original_planned, None)
+        else:
+            self._platform_choices[train_id][original_planned] = chosen_seg
 
     def get_chosen_seg(self, train_id: int, planned_seg: str) -> str:
         """
@@ -280,9 +298,9 @@ class SystemState:
         Reverse lookup: gegeven een actual segment-id, geef het geplande segment.
         Retourneert actual_seg zelf als er geen override bestaat.
         """
-        for planned, actual in self._platform_choices[train_id].items():
+        for original_planned, actual in self._platform_choices[train_id].items():
             if actual == actual_seg:
-                return planned
+                return original_planned
         return actual_seg
 
     # ==========================================================================
@@ -308,11 +326,11 @@ class SystemState:
         def _resolve(seg: str) -> str:
             return self.get_chosen_seg(train_id, seg)
 
-        if current is None:
-            if not actual:
-                return [_resolve(s) for s in train.path]  # nog niet gestart
+        if current is None: #ofwel gefinisht of wel nog niet gestart
+            if not actual: # nog niet gestart
+                return [_resolve(s) for s in train.path]  
             # Safeguard: check of er nog onafgewerkte segmenten zijn
-            for i, seg in enumerate(train.path):
+            for i, seg in enumerate(train.path):    #gefinisht
                 resolved = _resolve(seg)
                 entry, exit_ = actual.get(resolved, (None, None))
                 if entry is not None and exit_ is None:

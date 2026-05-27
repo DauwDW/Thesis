@@ -52,17 +52,13 @@ SOLVER_TIMEOUT_SECONDS = 60
 SOLVER_MIP_GAP         = 0.00000001
 
 RESCHEDULING_HORIZON = 3600 # normaal 7200
-CONFLICT_WINDOW = 1800 # normaal 1800
+CONFLICT_WINDOW = 1200 # normaal 1800
 
 # Tijdvenster voor retracking-conflicten (z_alt/y_alt variabelen).
 # Kleiner dan CONFLICT_WINDOW om model-explosie te voorkomen bij drukke periodes.
 # Twee treinen worden als potentieel retracking-conflicterend beschouwd als hun
 # verwachte exittijden op het station maximaal RETRACK_CONFLICT_WINDOW uit elkaar liggen.
 RETRACK_CONFLICT_WINDOW = 600  # 10 minuten
-# Maximum aantal visits per fysiek platform in de retracking-conflictenumeratie.
-# Begrenst het aantal z_alt/y_alt variabelen: max C(MAX,2) paren per platform.
-# Hogere waarden geven meer retracking-vrijheid maar vergroot het MIP.
-MAX_RETRACK_VISITS_PER_PLATFORM = 6
 
 # Stations waarvoor retracking actief is.
 # Pilotrun (seed=42, periodic 1800s) gaf volgende verdeling:
@@ -76,6 +72,16 @@ MAX_RETRACK_VISITS_PER_PLATFORM = 6
 # zonder retracking congestie opbouwt die de solver niet kan oplossen.
 # Conclusie: gebruik alle 4 stations (None = alles toelaten).
 RETRACK_STATIONS: set[str] | None = None
+
+# =============================================================================
+# Retracking — platform-switch penalty
+# =============================================================================
+# Penalty (in seconden) per platform-switch in het MIP-objectief.
+# De solver wijkt alleen af van het geplande platform als dat minstens
+# SWITCH_PENALTY seconden totale vertraging bespaart.
+# Hogere waarde → minder switches, stabieler maar minder flexibel.
+# Lagere waarde → solver switcht vrij, risico op onnodige wisselingen.
+SWITCH_PENALTY: float = 0.0
 
 # =============================================================================
 # Dispatcher prioriteitsveroudering

@@ -64,7 +64,7 @@ class Controller:
         gamma,
         duration_statistic:"scheduled",
         subtype_weights=None,
-        min_objective_improvement: float = 0.0,
+        min_objective_improvement: float = -10000.0,
         platform_alternatives: dict | None = None,
     ) -> None:
 
@@ -92,6 +92,9 @@ class Controller:
         self.platform_alternatives = platform_alternatives or {}
 
         self._solver_runtimes: list[float] = []
+        # MIP-objectiefwaarden (gewogen totale projectievertraging) per toegepaste reschedule.
+        # Gebruikt voor de empirische min_objective_threshold kalibratie (sectie 6).
+        self._solution_objectives: list[float] = []
 
         self._n_rescheduled = 0
         self._n_fcfs_fallback = 0
@@ -209,6 +212,8 @@ class Controller:
             self._n_rescheduled += 1
             self._n_platform_switches += solution.n_platform_switches
             self._solver_runtimes.append(solution.runtime)
+            if solution.objective is not None:
+                self._solution_objectives.append(solution.objective)
 
             self._log(
                 current_time,
@@ -283,6 +288,7 @@ class Controller:
                 + self._n_skipped_no_improvement
             ),
             "total_solver_runtime_s":   sum(self._solver_runtimes),
+            "solution_objectives":       list(self._solution_objectives),
             "max_consecutive_failures": self._consecutive_failures,
         }
 

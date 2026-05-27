@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 
 @dataclass(order=True)
-class _PrioritizedItem:
+class _PrioritizedItem: #Wrapper om heapq te kunnen vergelijken, heapq --> kleinste element altijd bovenaan
     time: float
     priority: int
     event: object = field(compare=False)
@@ -65,16 +65,27 @@ class EventQueue:
 
     def cancel_train_entered(self, train_id: int, segment_id: str) -> None:
         """
-        Markeer TrainEntered-events als cancelled.
+        Markeer TrainEntered-events voor een specifiek segment als cancelled.
         """
         for item in self._heap:
             ev = item.event
-
             if (
                 isinstance(ev, TrainEntered)
                 and ev.train_id == train_id
                 and ev.segment_id == segment_id
             ):
+                ev.cancelled = True
+
+    def cancel_all_train_entered(self, train_id: int) -> None:
+        """
+        Markeer alle TrainEntered-events voor train_id als cancelled,
+        ongeacht segment. Gebruik dit bij reschedule van een niet-gestarte
+        trein zodat eventuele verouderde events voor het vorige (gepland of
+        gekozen) segment actief worden opgeruimd.
+        """
+        for item in self._heap:
+            ev = item.event
+            if isinstance(ev, TrainEntered) and ev.train_id == train_id:
                 ev.cancelled = True
 
     def cancel_ready_to_exit(self, train_id: int, segment_id: str) -> None:

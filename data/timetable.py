@@ -769,12 +769,33 @@ def assign_platforms(
 # Stations die volledig uitgesloten zijn van retracking
 # (lijn-gemapte platforms of richtings-specifieke toewijzing)
 _RETRACK_EXCLUDED = {
-    "BRUSSEL-NOORD",       # lijn-gemapte platforms
-    "JETTE",               # richtings-specifiek (2 vaste platforms)
-    "BOCKSTAEL",           # richtings-specifiek
-    "BRUSSEL-WEST",        # richtings-specifiek
-    "SIMONIS",             # richtings-specifiek
-    "THURN EN TAXIS",      # richtings-specifiek
+    # "BRUSSEL-NOORD",       # lijn-gemapte platforms
+    # "JETTE",               # richtings-specifiek (2 vaste platforms)
+    # "BOCKSTAEL",           # richtings-specifiek
+    # "BRUSSEL-WEST",        # richtings-specifiek
+    # "SIMONIS",             # richtings-specifiek
+    # "THURN EN TAXIS",      # richtings-specifiek
+    'JETTE', 'SCHAARBEEK', 'BRUSSEL-NOORD', 'BRUSSEL-CENTRAAL',
+    'BRUSSEL-CONGRES', 'BRUSSEL-KAPELLEKERK', 'BRUSSEL-ZUID',
+    'VORST-OOST', 'BRUSSEL-WEST', 'SIMONIS', 'THURN EN TAXIS',
+    'BOCKSTAEL', 'SINT-AGATHA-BERCHEM', 'ZELLIK', 'ANDERLECHT',
+    'BRUSSEL-SCHUMAN' #Geen Stationssegmenten
+}
+
+# Bidirectionele between-station spoorpools (handmatig gedefinieerd).
+# Elk paar vertegenwoordigt twee fysieke sporen die in principe beide
+# richtingen kunnen bedienen. De MIP mag een trein naar het alternatieve
+# spoor sturen als dat congestie op het geplande spoor oplost.
+#
+# Voorbeeld: lijn 36N tussen Schaarbeek en Brussel-Noord heeft 2 sporen.
+# Normaal: spoor A → nordwaarts, spoor B → zuidwaarts.
+# Met bidirectionele retracking: de MIP kan een noordwaartse trein naar
+# spoor B sturen (en andersom), mits er geen tegengestelde trein op zit.
+#
+# Sleutel: gepland segment  →  lijst van alternatieve segment-ID's
+_BETWEEN_STATION_POOLS: dict[str, list[str]] = {
+    "36N:SCHAARBEEK-BRUSSEL-NOORD": ["36N:BRUSSEL-NOORD-SCHAARBEEK"],
+    "36N:BRUSSEL-NOORD-SCHAARBEEK": ["36N:SCHAARBEEK-BRUSSEL-NOORD"],
 }
 
 
@@ -783,16 +804,17 @@ def get_platform_alternatives(df: pd.DataFrame) -> dict[tuple[int, str], list[st
     Retourneert voor elke retrackbare (train_id, planned_segment) de lijst
     van alternatieve segmenten (exclusief het geplande segment zelf).
 
-    Actieve pools (top-3 bottleneck stations, zie RETRACK_STATIONS in settings):
-    - BRUSSEL-CENTRAAL : 1 vrije pool (platforms 1-6)
-    - BRUSSEL-CONGRES  : 1 vrije pool (platforms 1-4)
-    - BRUSSEL-ZUID     : nationaal pool (platforms 7-21)
+    Twee soorten pools:
 
-    Stations met "-- platform N" segmenten maar buiten de top-3:
-    - BRUSSEL-KAPELLEKERK : 4 platforms, uitgesloten via RETRACK_STATIONS
+    1. Station-platforms ("STATION -- platform N"):
+       Actieve pools (zie RETRACK_STATIONS in settings):
+       - BRUSSEL-CENTRAAL : vrije pool (platforms 1-6)
+       - BRUSSEL-CONGRES  : vrije pool (platforms 1-4)
+       - BRUSSEL-ZUID     : nationaal pool (platforms 7-21)
+       - BRUSSEL-KAPELLEKERK : 4 platforms
 
-    Niet retrackbaar (geen "-- platform N" segmentnamen of lijn-gebonden):
-    - BRUSSEL-NOORD, SCHAARBEEK, Jette, Bockstael, Brussel-West, Simonis, Thurn en Taxis
+    2. Bidirectionele between-station sporen (_BETWEEN_STATION_POOLS):
+       - 36N:SCHAARBEEK-BRUSSEL-NOORD  ↔  36N:BRUSSEL-NOORD-SCHAARBEEK
 
     Parameters
     ----------
@@ -807,51 +829,70 @@ def get_platform_alternatives(df: pd.DataFrame) -> dict[tuple[int, str], list[st
     from collections import defaultdict
     from config.settings import RETRACK_STATIONS
 
-    # Alleen rijen met daadwerkelijke station-verblijfstijden
+    result: dict[tuple[int, str], list[str]] = {}
+
+    # =========================================================================
+    # DEEL 1 — Station-platform pools
+    # =========================================================================
+
     dwell_mask = df['TYPE'].isin(['WITHIN-STATION-DWELL', 'WITHIN-STATION-PASSING'])
     dwell_df   = df.loc[dwell_mask].copy()
 
-    if dwell_df.empty:
-        return {}
+    if not dwell_df.empty:
+        seg_to_pool: dict[str, str] = {}
+        pat_platform = re.compile(r'^(.+?) -- platform \d+$')
 
-    # --- Bouw station-pools ---
-    # Enkel vrije pools met "STATION -- platform N" naamgeving.
-    # Pool-label = stationsnaam -> alle platforms in die pool zijn uitwisselbaar.
+        for seg in dwell_df['SECTION'].unique():
+            seg_str = str(seg)
+            m = pat_platform.match(seg_str)
+            if not m:
+                continue
+            station = m.group(1)
+            if station in _RETRACK_EXCLUDED:
+                continue
+            if RETRACK_STATIONS is not None and station not in RETRACK_STATIONS:
+                continue
+            seg_to_pool[seg_str] = station
 
-    seg_to_pool: dict[str, str] = {}
+        pool_to_segs: dict[str, list[str]] = defaultdict(list)
+        for seg, pool in seg_to_pool.items():
+            pool_to_segs[pool].append(seg)
+        pool_to_segs = {p: sorted(segs) for p, segs in pool_to_segs.items() if len(segs) > 1}
 
-    # Patroon: "STATION -- platform N" (N = een of meer cijfers, niets daarna)
-    pat_platform = re.compile(r'^(.+?) -- platform \d+$')
+        for _, row in dwell_df.iterrows():
+            seg  = str(row['SECTION'])
+            pool = seg_to_pool.get(seg)
+            if pool is None or pool not in pool_to_segs:
+                continue
+            alts = [s for s in pool_to_segs[pool] if s != seg]
+            if alts:
+                result[(int(row['TRAIN_NO']), seg)] = alts
 
-    for seg in dwell_df['SECTION'].unique():
-        seg_str = str(seg)
-        m = pat_platform.match(seg_str)
-        if not m:
-            continue
-        station = m.group(1)
-        if station in _RETRACK_EXCLUDED:
-            continue
-        # Whitelist-filter: alleen stations in RETRACK_STATIONS (None = alles)
-        if RETRACK_STATIONS is not None and station not in RETRACK_STATIONS:
-            continue
-        seg_to_pool[seg_str] = station  # pool-label = stationsnaam
+    # =========================================================================
+    # DEEL 2 — Bidirectionele between-station pools
+    #
+    # Voor elk between-station segment in _BETWEEN_STATION_POOLS: voeg
+    # het alternatieve spoor toe als optie voor elke trein die dit segment
+    # in zijn pad heeft.
+    #
+    # Timing-aanname: beide sporen hebben dezelfde fysieke lengte en dus
+    # dezelfde rijtijd. instance.py vertaalt het gekozen spoor terug naar
+    # het geplande segment voor alle timetable-lookups (via get_planned_seg_for).
+    # =========================================================================
 
-    # Verwijder pools met slechts 1 segment (geen alternatief mogelijk)
-    pool_to_segs: dict[str, list[str]] = defaultdict(list)
-    for seg, pool in seg_to_pool.items():
-        pool_to_segs[pool].append(seg)
-    pool_to_segs = {p: sorted(segs) for p, segs in pool_to_segs.items() if len(segs) > 1}
+    if _BETWEEN_STATION_POOLS:
+        between_mask = df['TYPE'] == 'BETWEEN-STATION'
+        between_df   = df.loc[between_mask].copy()
 
-    # --- Bouw result dict ---
-    result: dict[tuple[int, str], list[str]] = {}
-    for _, row in dwell_df.iterrows():
-        seg  = str(row['SECTION'])
-        pool = seg_to_pool.get(seg)
-        if pool is None or pool not in pool_to_segs:
-            continue
-        alts = [s for s in pool_to_segs[pool] if s != seg]
-        if alts:
-            result[(int(row['TRAIN_NO']), seg)] = alts
+        pool_segs = set(_BETWEEN_STATION_POOLS.keys())
+        for _, row in between_df.iterrows():
+            seg = str(row['SECTION'])
+            if seg not in pool_segs:
+                continue
+            alts = _BETWEEN_STATION_POOLS[seg]
+            key  = (int(row['TRAIN_NO']), seg)
+            if key not in result:          # geen dubbele entries
+                result[key] = alts
 
     return result
 

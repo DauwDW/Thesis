@@ -276,12 +276,18 @@ class EventDrivenTrigger(BaseTrigger):
 
                 elapsed = current_time - entry_time
 
+                # Bug-fix (4): planned_segment_id meegeven zodat _is_passing()
+                # de halts_at-check op het geplande segment doet (halt-indicators
+                # zijn geïndexeerd op geplande segmenten, niet op gekozen platforms).
+                # Zonder deze fix wordt een geretrackte stationsstop als passing
+                # gezien → 1s duur in plaats van 60/120s.
                 full_dur = sample_duration(
-                    train      = train,
-                    segment    = self._segments[current_seg],
-                    timetable  = self._timetable,
-                    entry_time = entry_time,
-                    rng        = rng,
+                    train               = train,
+                    segment             = self._segments[current_seg],
+                    timetable           = self._timetable,
+                    entry_time          = entry_time,
+                    rng                 = rng,
+                    planned_segment_id  = state.get_planned_seg_for(train_id, current_seg),
                 )
                 # moet het hier niet full_dur = sampled_duration zijn?
 
@@ -329,12 +335,15 @@ class EventDrivenTrigger(BaseTrigger):
                 # FCFS: wacht tot segment vrij is
                 t = max(t, seg_free_at.get(seg_id, 0.0))
 
+                # Bug-fix (4): planned_segment_id meegeven voor correcte
+                # halts_at-check (zie opmerking hierboven bij full_dur).
                 duration = sample_duration(
-                    train      = train,
-                    segment    = segment,
-                    timetable  = self._timetable,
-                    entry_time = t,
-                    rng        = rng,
+                    train               = train,
+                    segment             = segment,
+                    timetable           = self._timetable,
+                    entry_time          = t,
+                    rng                 = rng,
+                    planned_segment_id  = state.get_planned_seg_for(train_id, seg_id),
                 )
 
                 if segment.seg_type == SegmentType.STATION:         #within-station-passing check zou hier moeten !!!

@@ -20,12 +20,8 @@ Priority weights (STEP 6):
     "dynamic" → idem + upgrade_weight bovenop als state.current_delay(t) >= gamma
                 (exogene upgrade op basis van observed delay)
 """
-# !!! check of je hier beter ipv scheduled exit mip_exit gebruikt
-
 from config.settings import (
     L,
-    EPSILON,
-    DELTA_MAX,
     RESCHEDULING_HORIZON,
     CONFLICT_WINDOW,
     SOLVER_DURATION_STATISTIC
@@ -45,23 +41,6 @@ def has_started(state, train) -> bool:
         return True
     except KeyError:
         return False
-
-
-# def planned_entry(timetable, train_id, segment):
-#     return timetable.scheduled_entry(train_id, segment)
-
-
-# # def planned_exit(timetable, segments, train_id, segment):
-# #     if segments[segment].seg_type == SegmentType.BETWEEN_STATION:
-# #         return (
-# #             timetable.scheduled_entry(train_id, segment)
-# #             + timetable.running_time(train_id, segment)
-# #         )
-# #     return (
-# #         timetable.scheduled_entry(train_id, segment)
-# #         + timetable.dwell_time(train_id, segment)
-# #     )
-
 
 # ============================================================================
 # Main
@@ -109,7 +88,7 @@ def build_instance(
         # Na retracking kan first_seg een gekozen platform zijn; vertaal naar gepland voor timetable.
         first_seg_planned = state.get_planned_seg_for(train.id, first_seg)
         start_time = timetable.scheduled_entry(train.id, first_seg_planned)
-        if start_time <= horizon_end:# treinen die nog niet begonnen zijn maar hun planned entry wel binnen de horizon ligt
+        if start_time <= horizon_end:   # treinen die nog niet begonnen zijn maar hun planned entry wel binnen de horizon ligt
             relevant.append(train)
 
     # =========================================================================
@@ -169,9 +148,9 @@ def build_instance(
             if seg in Sl:
                 if duration_statistic != "scheduled":
                     empirical = running_time_statistic(
-                        section=seg,
+                        section=planned_seg,  # geplande segmentnaam voor statistieken-lookup
                         train_type=train.train_subtype.value,
-                        dynamics=train.dynamics_at(seg),
+                        dynamics=train.dynamics_at(planned_seg),  # dynamics geïndexeerd op gepland segment
                         period=seconds_to_period(sched_entry[(train.id, seg)]),
                         statistic=duration_statistic,
                     )
@@ -198,7 +177,7 @@ def build_instance(
             #         dwell[(train.id, seg)] = 1
 
     halts = {
-        (train.id, seg): train.halts_at(seg)
+        (train.id, seg): train.halts_at(state.get_planned_seg_for(train.id, seg))
         for train in relevant
         for seg in path[train.id]
         if seg in Ss
@@ -249,11 +228,27 @@ def build_instance(
     # =========================================================================
     expected_exit = {}
     for train in relevant:
+        # Bug-fix (4): incorporeer vertraging in expected_exit voor niet-bezette
+        # segmenten, parallel aan de expected_entry logica in STEP 5.
+        #
+        # Zonder correctie gebruiken vertraagde treinen sched_exit als expected_exit,
+        # waardoor ze buiten RETRACK_CONFLICT_WINDOW kunnen vallen terwijl ze
+        # operationeel juist conflicteren.  Prioriteit:
+        #   1. Actief segment: current_time + resterende bezetting  (ongewijzigd)
+        #   2. MIP-plan beschikbaar: gebruik mip_exit_for            (nieuw)
+        #   3. Fallback: sched_exit + current_delay                  (was: sched_exit)
+        current_delay = state.current_delay(train.id)
         for seg in path[train.id]:
             if (train.id, seg) in occupied:
                 expected_exit[(train.id, seg)] = current_time + occupied[(train.id, seg)]
             else:
-                expected_exit[(train.id, seg)] = sched_exit[(train.id, seg)]
+                # path[train.id] bevat gekozen segmenten; mip_exit_for is na
+                # Bug-fix (2) ook geïndexeerd op gekozen segmenten.
+                mip_ex = state.mip_exit_for(train.id, seg)
+                if mip_ex is not None:
+                    expected_exit[(train.id, seg)] = mip_ex
+                else:
+                    expected_exit[(train.id, seg)] = sched_exit[(train.id, seg)] + current_delay
 
 
     # =========================================================================
@@ -465,11 +460,40 @@ def build_instance(
     # Alleen segmenten die nog in het resterende pad liggen zijn relevant.
     # =========================================================================
 
+    # Bug-fix (1): platform_alternatives uitsturen met het HUIDIGE GEKOZEN segment
+    # als sleutel (in plaats van het originele geplande segment).
+    #
+    # Achtergrond:
+    #   platform_alternatives is extern gebouwd met (train_id, planned_seg) als sleutel.
+    #   path[train_id] bevat GEKOZEN segmenten (via remaining_path()).
+    #   Na een eerste retrack geldt planned_seg ≠ chosen_seg, waardoor de check
+    #   "planned_seg in path" False oplevert en alle alternatieven wegvallen.
+    #
+    # Oplossing:
+    #   1. Vertaal planned_seg → chosen_seg voor de path- en fixed_entry-checks.
+    #   2. Sla de gefilterde dict op met chosen_seg als sleutel.  De "default"-optie
+    #      in het MIP is chosen_seg (x[t, chosen_seg, chosen_seg] = 1 = geen switch);
+    #      de overige opties zijn planned_seg + originele alts minus chosen_seg.
+    #   3. set_platform_choice in state.py resolvet key_seg terug naar planned_seg
+    #      om de invariant _platform_choices[original_planned] = chosen te bewaren.
     filtered_platform_alternatives: dict[tuple[int, str], list[str]] = {}
     if platform_alternatives:
         for (train_id, planned_seg), alts in platform_alternatives.items():
-            if train_id in T and planned_seg in path.get(train_id, ()):
-                filtered_platform_alternatives[(train_id, planned_seg)] = alts
+            if train_id not in T:
+                continue
+            # Vertaal naar het HUIDIGE gekozen segment voor path-membership.
+            chosen_seg = state.get_chosen_seg(train_id, planned_seg)
+            if chosen_seg not in path.get(train_id, ()):
+                continue
+            # Geen retracking voor het actieve segment: de trein zit er al op
+            # en kan fysiek niet meer wisselen naar een alternatief platform.
+            if (train_id, chosen_seg) in fixed_entry:
+                continue
+            # Alle beschikbare fysieke platforms (inclusief het originele geplande).
+            all_options = [planned_seg] + alts
+            # Verwijder chosen_seg uit de alternatieven; het wordt de default.
+            remaining_alts = [p for p in all_options if p != chosen_seg]
+            filtered_platform_alternatives[(train_id, chosen_seg)] = remaining_alts
 
     return dict(
         T=T,

@@ -44,8 +44,13 @@ class Solution:
         self.n_platform_switches  = n_platform_switches
 
     def is_feasible(self) -> bool:
-        """True als de solver een haalbare oplossing heeft gevonden."""
-        return self.status in ("optimal",)
+        """True als de solver een haalbare oplossing heeft gevonden.
+
+        'timeout' betekent dat de tijdslimiet werd bereikt maar er wel een
+        incumbent beschikbaar is (model.SolCount > 0) — die oplossing is
+        haalbaar en bruikbaar, ook al is de optimaliteitsgarantie afwezig.
+        """
+        return self.status in ("optimal", "timeout")
 
     def entry_time(self, train_id, segment_id) -> float | None:
         return self.entry.get((train_id, segment_id))

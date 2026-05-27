@@ -1,9 +1,5 @@
-# dispatcher FULL FSFS
-
 from __future__ import annotations
-
 import logging
-
 from config.settings import DISPATCHER_PRIORITY_TTL
 
 logger = logging.getLogger(__name__)
@@ -19,19 +15,16 @@ class Dispatcher:
       dat een trein fysiek klaar is om het volgende resource aan te
       vragen — de globale toekomstvolgorde leeft in het MIP-schedule.
 
-      Prioriteit binnen de queue:
-        1. mip_entry uit SystemState (indien beschikbaar)
-        2. FIFO op insertion-order (fallback)
+    Queue-modi (queue_mode):
+      "fsfs"  (default) — First-Scheduled-First-Served:
+        De waiting-list wordt gesorteerd op mip_entry (laagste = hoogste
+        prioriteit). Zolang current_time − last_reschedule_time <
+        DISPATCHER_PRIORITY_TTL wordt mip_entry gebruikt; daarna valt de
+        dispatcher terug op scheduled_entry (timetable-volgorde) om
+        deadlocks door verouderde MIP-prioriteiten te voorkomen.
 
-      Een trein die de queue niet aanvoert wordt geweigerd zelfs als het
-      segment vrij is, zodat de hoogste-prioriteitswachter eerst gaat.
-
-    Strict-order modus (optioneel):
-      Wanneer strict_order=True wordt bovenop FCFS-met-prioriteit een
-      harde MIP-volgorde afgedwongen: een trein mag een segment pas
-      betreden als alle andere niet-afgeronde treinen met een lagere
-      mip_entry op dit segment ofwel al binnen zijn, ofwel dit segment
-      in hun pad al voorbij zijn. Zie _strict_order_allows.
+      "fcfs"  — First-Come-First-Served:
+        Pure insertion-order; geen MIP-prioriteit.
 
     Verantwoordelijkheden:
       - bezetting (_occupied)
@@ -62,40 +55,6 @@ class Dispatcher:
 
 
 
-    def _has_passed(self, train_id: int, segment_id: str, state) -> bool:
-        """
-        True als train_id segment_id al voorbij is in zijn pad — d.w.z.
-        op een later segment binnen is gekomen.
-
-        Defensief tegen oude MIP-entries die nog in state staan voor
-        segmenten die de trein in werkelijkheid al gepasseerd is, of
-        voor segmenten die niet in zijn pad zitten.
-
-        Bij retracking: segment_id kan een gekozen platform zijn dat niet
-        letterlijk in train.path voorkomt. We vertalen eerst naar het geplande
-        segment voor de path-lookup, en controleren dan op gekozen segmenten.
-        """
-        train = self._trains[train_id]
-        path  = train.path
-
-        # Vertaal naar gepland segment voor path-index lookup
-        planned_seg = state.get_planned_seg_for(train_id, segment_id)
-        try:
-            idx_seg = path.index(planned_seg)
-        except ValueError:
-            # segment niet in pad van deze trein — kan dus nooit blokkeren
-            return True
-
-        for later_planned in path[idx_seg + 1:]:
-            later_actual = state.get_chosen_seg(train_id, later_planned)
-            try:
-                state.actual_entry(train_id, later_actual)
-                return True
-            except KeyError:
-                continue
-
-        return False
-
     # ==========================================================================
     # Resource requests
     # ==========================================================================
@@ -111,9 +70,9 @@ class Dispatcher:
         True als deze trein nu het segment mag betreden.
 
         Faalt (en zet de trein in de queue) als:
-          - segment bezet is, of
-          - in strict-order modus: een trein met lagere mip_entry op dit
-            segment is nog niet binnen en nog niet voorbij, of
+          - het segment bezet is, of
+          - een andere trein in de waiting-list een hogere prioriteit heeft
+            (lagere mip_entry in fsfs-modus, of eerder aangekomen in fcfs-modus).
         """
         waiters = self._waiting[segment_id]
 
@@ -195,23 +154,12 @@ class Dispatcher:
     ) -> int:
         waiters = self._waiting[segment_id]
 
-        # Bepaal of de MIP-oplossing nog vers genoeg is om te gebruiken.
-        # Als current_time onbekend is, val terug op het oude gedrag (gebruik mip_entry).
         use_mip = (
             current_time is None
             or current_time - self._last_reschedule_time < DISPATCHER_PRIORITY_TTL
         )
 
-        if use_mip:
-            # FSFS op MIP-plan: laagste mip_entry gaat eerst.
-            def key(idx_tid):
-                idx, tid = idx_tid
-                mip = state.mip_entry_for(tid, segment_id) if state is not None else None
-                return (mip if mip is not None else float("inf"), idx)
-        else:
-            # Fallback: FSFS op timetable (scheduled_entry).
-            # Deterministisch en altijd cirkel-vrij — voorkomt deadlocks door
-            # verouderde MIP-prioriteiten.
+        if not use_mip:
             logger.debug(
                 "priority_winner: MIP-prioriteit verouderd (%.0fs geleden, TTL=%.0fs) "
                 "voor seg=%s — gebruik scheduled_entry",
@@ -220,8 +168,10 @@ class Dispatcher:
                 segment_id,
             )
 
-            def key(idx_tid):
-                idx, tid = idx_tid
+        def _priority(tid: int) -> float:
+            if use_mip:
+                val = state.mip_entry_for(tid, segment_id) if state is not None else None
+            else:
                 try:
                     # segment_id kan een gekozen platform zijn na retracking;
                     # de timetable is geïndexeerd op geplande segmenten.
@@ -229,14 +179,13 @@ class Dispatcher:
                         state.get_planned_seg_for(tid, segment_id)
                         if state is not None else segment_id
                     )
-                    sched = self._timetable.scheduled_entry(tid, planned)
+                    val = self._timetable.scheduled_entry(tid, planned)
                 except (KeyError, AttributeError):
-                    sched = None
-                return (sched if sched is not None else float("inf"), idx)
+                    val = None
+            return val if val is not None else float("inf")
 
-        indexed = list(enumerate(waiters))
-        winner_idx, winner_tid = min(indexed, key=key)
-        return winner_tid
+        _, winner = min(enumerate(waiters), key=lambda item: (_priority(item[1]), item[0])) # (index, train_id), item[0] voor tiebrake
+        return winner
 
     # ==========================================================================
     # C2-constraint
@@ -248,30 +197,31 @@ class Dispatcher:
         segment_id: str,
         entry_time: float,
         state,
+        planned_segment_id: str | None = None,
     ) -> float:
         """
         Vroegste toegelaten exittijd.
 
         Voor dwell-segmenten:
-        - gebruik MIP-exit indien beschikbaar
-        - anders fallback op scheduled_exit
+        - fallback op scheduled_exit van het geplande segment
 
-        Voor andere segmenten:
+        Voor andere segmenten (between-station of passing):
         - entry_time
+
+        planned_segment_id:
+            Bij retracking is segment_id het gekozen platform. halt_indicators
+            en de timetable zijn geïndexeerd op het geplande segment. Geef
+            planned_segment_id mee zodat de halts_at- en scheduled_exit-lookup
+            correct werkt voor geretrackte stops.
         """
-        train = self._trains[train_id]
+        train   = self._trains[train_id]
+        plan_id = planned_segment_id if planned_segment_id is not None else segment_id
 
-        if not train.halts_at(segment_id):
+        if not train.halts_at(plan_id):
             return entry_time
-        
-        # mip_exit = state.mip_exit_for(train_id, segment_id)
-        # if mip_exit is not None:
-        #     return mip_exit
 
-        # logger.debug(
-        #     "fallback naar scheduled_exit voor dwell-segment train=%s seg=%s "
-        #     "exit=%.1f",
-        #     train_id, segment_id, fallback,
-        # )
-        fallback = self._timetable.scheduled_exit(train_id, segment_id)
-        return fallback
+        scheduled_ex = self._timetable.scheduled_exit(train_id, plan_id)
+        # mip_ex = state.mip_exit_for(train_id, segment_id) if state is not None else None
+        # if mip_ex is not None:
+        #     return max(entry_time, scheduled_ex, mip_ex)
+        return max(entry_time, scheduled_ex)
