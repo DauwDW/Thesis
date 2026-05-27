@@ -42,7 +42,7 @@ def solve(instance, priority_strategy="static", time_limit=SOLVER_TIMEOUT_SECOND
         )
 
     try:
-        model, entry, dep, delay, y, x, _ = build_and_solve_model(
+        model, entry, dep, delay, use, _ = build_and_solve_model(
             T                     = instance["T"],
             S                     = instance["S"],
             Ss                    = instance["Ss"],
@@ -64,7 +64,7 @@ def solve(instance, priority_strategy="static", time_limit=SOLVER_TIMEOUT_SECOND
             verbose               = verbose,
             platform_alternatives = instance.get("platform_alternatives", {}),
         )
-        return parse_solution(model, entry, dep, delay, x=x)
+        return parse_solution(model, entry, dep, delay, x=use)
 
     except Exception as e:
         print(f"[solver] Gurobi error: {e}")
