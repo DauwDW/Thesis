@@ -260,7 +260,6 @@ class Simulator:
                 )
             self._solutions.append(result.solution)
             self._apply_solution(result.solution)
-            self._dispatcher.notify_reschedule(self._state.current_time)
 
         if self._controller.consecutive_failures >= _DEADLOCK_CONSECUTIVE_FAILURES:
             raise DeadlockDetected(

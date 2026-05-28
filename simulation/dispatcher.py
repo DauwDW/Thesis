@@ -1,6 +1,5 @@
 from __future__ import annotations
 import logging
-from config.settings import DISPATCHER_PRIORITY_TTL
 
 logger = logging.getLogger(__name__)
 _VALID_QUEUE_MODES = ("fsfs", "fcfs")
@@ -18,10 +17,7 @@ class Dispatcher:
     Queue-modi (queue_mode):
       "fsfs"  (default) — First-Scheduled-First-Served:
         De waiting-list wordt gesorteerd op mip_entry (laagste = hoogste
-        prioriteit). Zolang current_time − last_reschedule_time <
-        DISPATCHER_PRIORITY_TTL wordt mip_entry gebruikt; daarna valt de
-        dispatcher terug op scheduled_entry (timetable-volgorde) om
-        deadlocks door verouderde MIP-prioriteiten te voorkomen.
+        prioriteit). MIP-prioriteit is altijd actief — geen TTL-verval.
 
       "fcfs"  — First-Come-First-Served:
         Pure insertion-order; geen MIP-prioriteit.
@@ -48,11 +44,6 @@ class Dispatcher:
         self._waiting: dict[str, list[int]] = {
             seg_id: [] for seg_id in segments
         }
-
-        # Tijdstip van de laatste toegepaste MIP-oplossing.
-        # float("-inf") → nooit gerescheduled → prioriteit is direct verouderd.
-        self._last_reschedule_time: float = float("-inf")
-
 
 
     # ==========================================================================
@@ -107,17 +98,6 @@ class Dispatcher:
     # Queue management
     # ==========================================================================
 
-    def notify_reschedule(self, current_time: float) -> None:
-        """
-        Registreer het tijdstip waarop een MIP-oplossing werd toegepast.
-
-        Zolang current_time - _last_reschedule_time < _PRIORITY_TTL gebruikt
-        de dispatcher mip_entry als prioriteit (FSFS op MIP-plan).
-        Daarna valt hij terug op scheduled_entry (timetable-volgorde) zodat
-        verouderde MIP-prioriteiten geen deadlocks kunnen veroorzaken.
-        """
-        self._last_reschedule_time = current_time
-
     def next_waiter(self, segment_id: str, state=None, current_time: float | None = None) -> int | None:
         if not self._waiting[segment_id]:
             return None
@@ -154,34 +134,8 @@ class Dispatcher:
     ) -> int:
         waiters = self._waiting[segment_id]
 
-        use_mip = (
-            current_time is None
-            or current_time - self._last_reschedule_time < DISPATCHER_PRIORITY_TTL
-        )
-
-        if not use_mip:
-            logger.debug(
-                "priority_winner: MIP-prioriteit verouderd (%.0fs geleden, TTL=%.0fs) "
-                "voor seg=%s — gebruik scheduled_entry",
-                current_time - self._last_reschedule_time,
-                DISPATCHER_PRIORITY_TTL,
-                segment_id,
-            )
-
         def _priority(tid: int) -> float:
-            if use_mip:
-                val = state.mip_entry_for(tid, segment_id) if state is not None else None
-            else:
-                try:
-                    # segment_id kan een gekozen platform zijn na retracking;
-                    # de timetable is geïndexeerd op geplande segmenten.
-                    planned = (
-                        state.get_planned_seg_for(tid, segment_id)
-                        if state is not None else segment_id
-                    )
-                    val = self._timetable.scheduled_entry(tid, planned)
-                except (KeyError, AttributeError):
-                    val = None
+            val = state.mip_entry_for(tid, segment_id) if state is not None else None
             return val if val is not None else float("inf")
 
         _, winner = min(enumerate(waiters), key=lambda item: (_priority(item[1]), item[0])) # (index, train_id), item[0] voor tiebrake

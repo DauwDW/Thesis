@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from model.instance import build_instance
 from model.solver import solve
 from model.fcfs import compute_fcfs_objective
+from config.settings import SWITCH_PENALTY
 
 
 
@@ -168,7 +169,8 @@ class Controller:
             # ---------------------------------------------------------
             if self.min_objective_improvement > 0.0:
                 fcfs_objective, fcfs_converged = compute_fcfs_objective(instance)
-                improvement = fcfs_objective - solution.objective
+                delay_objective = solution.objective - solution.n_platform_switches * SWITCH_PENALTY
+                improvement = fcfs_objective - delay_objective
 
                 # Verbetering te klein én FCFS is betrouwbaar → skip.
                 # Als FCFS niet convergeert is de schatting onbetrouwbaar
@@ -184,7 +186,9 @@ class Controller:
                         current_time,
                         "SKIPPED_NO_IMPROVEMENT",
                         (
-                            f"MIP={solution.objective:.0f}s, "
+                            f"MIP={solution.objective:.0f}s "
+                            f"({solution.n_platform_switches} retracks), "
+                            f"MIP_delay={delay_objective:.0f}s, "
                             f"FCFS={fcfs_objective:.0f}s, "
                             f"improvement={improvement:.0f}s "
                             f"< threshold={self.min_objective_improvement:.0f}s"

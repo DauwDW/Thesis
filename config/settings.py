@@ -58,7 +58,7 @@ CONFLICT_WINDOW = 1200 # normaal 1800
 # Kleiner dan CONFLICT_WINDOW om model-explosie te voorkomen bij drukke periodes.
 # Twee treinen worden als potentieel retracking-conflicterend beschouwd als hun
 # verwachte exittijden op het station maximaal RETRACK_CONFLICT_WINDOW uit elkaar liggen.
-RETRACK_CONFLICT_WINDOW = 600  # 10 minuten
+RETRACK_CONFLICT_WINDOW = 900  # 15 minuten
 
 # Stations waarvoor retracking actief is.
 # Pilotrun (seed=42, periodic 1800s) gaf volgende verdeling:
@@ -81,16 +81,7 @@ RETRACK_STATIONS: set[str] | None = None
 # SWITCH_PENALTY seconden totale vertraging bespaart.
 # Hogere waarde → minder switches, stabieler maar minder flexibel.
 # Lagere waarde → solver switcht vrij, risico op onnodige wisselingen.
-SWITCH_PENALTY: float = 0.0
-
-# =============================================================================
-# Dispatcher prioriteitsveroudering
-# =============================================================================
-# Na zoveel seconden zonder nieuwe reschedule vervalt de MIP-prioriteit en
-# valt de dispatcher terug op scheduled_entry (timetable-volgorde).
-# Kies een waarde ≥ controller_freq zodat de prioriteit niet veroudert
-# vóór de volgende geplande reschedule.
-DISPATCHER_PRIORITY_TTL: float = 1200.0
+SWITCH_PENALTY: float = 120.0
 
 # =============================================================================
 # Monte Carlo trigger

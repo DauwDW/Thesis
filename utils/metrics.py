@@ -114,6 +114,7 @@ _METRIC_COLS = [
     'TED_passenger', 'TED_freight', 'TED_combined',
     'TAD_passenger', 'TAD_freight', 'TAD_combined',
     'delay_ratio',
+    'n_delay_gt3min', 'n_delay_gt5min', 'max_end_delay',
     'total_solve_time', 'n_rescheduled', 'n_fcfs_fallback', 'n_skipped',
     'n_platform_switches',
     # per-subtype TED + counts
@@ -170,6 +171,12 @@ def compute_metrics(df: pd.DataFrame, trains: dict | None = None) -> dict:
     ted_p = float(last_seg[pass_mask]['entry_delay'].clip(lower=0).fillna(0.0).sum())
     ted_f = float(last_seg[freight_mask]['entry_delay'].clip(lower=0).fillna(0.0).sum())
 
+    # --- End-delay drempelcounts + maximum ---
+    end_delays = last_seg['entry_delay'].clip(lower=0).fillna(0.0)
+    n_delay_gt3min  = int((end_delays > 180).sum())
+    n_delay_gt5min  = int((end_delays > 300).sum())
+    max_end_delay   = float(end_delays.max()) if len(end_delays) > 0 else 0.0
+
     # --- TAD per type ---
     tad_p = float(df[df['train_type'] == 'P']['entry_delay'].clip(lower=0).fillna(0.0).sum())
     tad_f = float(df[df['train_type'] == 'F']['entry_delay'].clip(lower=0).fillna(0.0).sum())
@@ -187,15 +194,18 @@ def compute_metrics(df: pd.DataFrame, trains: dict | None = None) -> dict:
         delay_ratio = None
 
     metrics = {
-        'TED_passenger': ted_p,
-        'TED_freight':   ted_f,
-        'TED_combined':  ted_p + ted_f,
-        'TAD_passenger': tad_p,
-        'TAD_freight':   tad_f,
-        'TAD_combined':  tad_p + tad_f,
-        'delay_ratio':   delay_ratio,
-        'n_passenger':   n_pass,
-        'n_freight':     n_freight,
+        'TED_passenger':   ted_p,
+        'TED_freight':     ted_f,
+        'TED_combined':    ted_p + ted_f,
+        'TAD_passenger':   tad_p,
+        'TAD_freight':     tad_f,
+        'TAD_combined':    tad_p + tad_f,
+        'delay_ratio':     delay_ratio,
+        'n_passenger':     n_pass,
+        'n_freight':       n_freight,
+        'n_delay_gt3min':  n_delay_gt3min,
+        'n_delay_gt5min':  n_delay_gt5min,
+        'max_end_delay':   max_end_delay,
     }
 
     # --- Per-subtype TED + counts ---
@@ -238,9 +248,12 @@ def _empty_metrics() -> dict:
         'TAD_passenger': None,
         'TAD_freight':   None,
         'TAD_combined':  None,
-        'delay_ratio':   None,
-        'n_passenger':   0,
-        'n_freight':     0,
+        'delay_ratio':    None,
+        'n_passenger':    0,
+        'n_freight':      0,
+        'n_delay_gt3min': None,
+        'n_delay_gt5min': None,
+        'max_end_delay':  None,
         'n_unfinished_total': None,
     }
     for st in _ALL_SUBTYPES:

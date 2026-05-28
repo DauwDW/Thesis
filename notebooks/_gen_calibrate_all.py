@@ -25,15 +25,13 @@ cells.append(new_markdown_cell("""\
 1. Rescheduling Window × Conflict Window (3×3 interactiegrid)
 2. `RETRACK_CONFLICT_WINDOW` (RCW) sweep
 3. `SWITCH_PENALTY` × `min_objective_improvement` (5×5 interactiegrid)
-4. `DISPATCHER_PRIORITY_TTL` sweep
-5. `mc_delay_per_train` (MC_threshold, event-driven)
-6. `min_objective_threshold` — empirische kalibratie via MIP-objectiefverdeling
+4. `mc_delay_per_train` (MC_threshold, event-driven)
+5. `min_objective_threshold` — empirische kalibratie via MIP-objectiefverdeling
 
 **Noten:**
 - `SWITCH_PENALTY` en `min_objective_improvement` (sectie 3) worden gezamenlijk gekalibreerd
   omdat ze op dezelfde objectiefschaal opereren en een sterk interactie-effect hebben.
 - `SWITCH_PENALTY = 0` = geen penalty (vrij switchen); negatief = incentive om te switchen.
-- `DISPATCHER_PRIORITY_TTL` (sectie 4) = hoe lang de MIP-prioriteit geldig blijft vóór expiry naar timetable-volgorde.
 - Resultaten worden opgeslagen in `../calibratie27_05/`.
 """))
 
@@ -98,8 +96,6 @@ _PATCH_TARGETS = {
     'CONFLICT_WINDOW':                  [_settings, _inst_mod, _mip_mod],
     'RETRACK_CONFLICT_WINDOW':          [_settings, _mip_mod],
     'SWITCH_PENALTY':                   [_settings, _mip_mod],
-    # DISPATCHER_PRIORITY_TTL: ook in dispatcher op module-niveau geïmporteerd
-    'DISPATCHER_PRIORITY_TTL':          [_settings, _disp_mod],
 }
 _originals: dict = {}
 
@@ -781,188 +777,9 @@ print('  # BEST_MOI = 120.0')
 """))
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTIE 4  —  DISPATCHER_PRIORITY_TTL
+# SECTIE 4 (verwijderd) — DISPATCHER_PRIORITY_TTL
+# De TTL is verwijderd uit de codebase: de dispatcher gebruikt altijd MIP-prioriteit.
 # ─────────────────────────────────────────────────────────────────────────────
-cells.append(new_markdown_cell("""\
----
-## Sectie 4 — `DISPATCHER_PRIORITY_TTL` kalibratie
-
-**Doel:** bepaal hoe lang de MIP-prioriteitsvolgorde geldig blijft in de dispatcher
-nadat een reschedule werd toegepast.
-
-> **Mechanisme (dispatcher.py):**
-> De dispatcher gebruikt `mip_entry` als prioriteit zolang:
-> ```
-> current_time − last_reschedule_time  <  DISPATCHER_PRIORITY_TTL
-> ```
-> Daarna valt hij terug op `scheduled_entry` (timetable-volgorde), wat
-> deterministisch en deadlock-vrij is maar de MIP-beslissing negeert.
-> `last_reschedule_time` wordt alleen gereset bij een **toegepaste** MIP-oplossing
-> (niet bij skips of FCFS-fallback).
-
-**Wanneer speelt de TTL een rol?**
-
-| Situatie | TTL-effect |
-|---|---|
-| Elke 900s een verse reschedule, geen skips | **Geen** — klok reset steeds vóór expiry |
-| `min_objective_improvement > 0` → skips | **Wel** — oude MIP-prioriteit loopt door |
-| Solver faalt (FCFS-fallback) | **Wel** — dispatcher valt eerder of later terug |
-
-**Testwaarden:** veelvouden van `controller_freq` (900 s)
-
-| Veelvoud | TTL (s) | Interpretatie |
-|---|---|---|
-| 0.5× | 450 | Expireert midden in een window (te kort) |
-| 1.0× | 900 | Precies één cyclusduur |
-| 1.5× | 1350 | Buffer van een halve cyclus |
-| 2.0× | 1800 | Buffer van één skip-cyclus |
-| 3.0× | 2700 | Twee skip-cycli |
-| 4.0× | 3600 | Lange buffer — risico stale prioriteit |
-
-**Metrics:**
-- **TED_combined** (μ ± σ) — kwaliteit
-- **Deadlock-rate** — veiligheid (stale MIP kan deadlock veroorzaken)
-
-**Referentielijn:** `controller_freq = 900s` — minimum veilige waarde
-"""))
-
-cells.append(new_code_cell("""\
-print('=' * 60)
-print('SECTIE 4: DISPATCHER_PRIORITY_TTL sweep')
-print(f'  Vaste instellingen: RW={BEST_RW}s, CW={BEST_CW}s, MOI={BEST_MOI}s,')
-print(f'                       SP={BEST_SP}s, RCW={BEST_RCW}s')
-print(f'  controller_freq = 900s  →  minimum veilige TTL = 900s')
-print('=' * 60)
-
-CTRL_FREQ   = 900   # voor de labels
-TTL_VALUES  = [450, 900, 1350, 1800, 2700, 3600]
-
-_s7_csv  = CALIB_DIR / 's7_dispatcher_ttl.csv'
-s7_parts = []
-for ttl in TTL_VALUES:
-    lbl = f'TTL{ttl}'
-    mult = ttl / CTRL_FREQ
-    print(f'\\n--- DISPATCHER_PRIORITY_TTL={ttl}s  ({mult:.1f}× controller_freq) ---')
-    batch = run_batch(
-        settings_override={
-            'RESCHEDULING_HORIZON':             BEST_RW,
-            'CONFLICT_WINDOW':                  BEST_CW,
-            'SWITCH_PENALTY':                   BEST_SP,
-            'RETRACK_CONFLICT_WINDOW':  BEST_RCW,
-            'DISPATCHER_PRIORITY_TTL': float(ttl),
-        },
-        run_kwargs={'min_objective_improvement': BEST_MOI},
-        label=lbl,
-        checkpoint_csv=_s7_csv,
-    )
-    batch['ttl'] = ttl
-    s7_parts.append(batch)
-
-df_s7 = pd.concat(s7_parts, ignore_index=True)
-df_s7.to_csv(_s7_csv, index=False)
-print(f'\\nKlaar. {len(df_s7)} rijen opgeslagen in {_s7_csv.name}')
-"""))
-
-cells.append(new_code_cell("""\
-# ── Visualisatie 7: dual-axis lijnplot (TED excl. DL + deadlock-rate alle seeds)
-# TED: berekend op schone seeds (deadlocked uitgesloten).
-# Deadlock-rate: altijd op alle seeds (dat IS de meting voor veiligheid).
-df_clean_s7, dl_s7 = _split_deadlocks(df_s7, 'ttl')
-
-summary_ted_s7 = df_clean_s7.groupby('ttl').agg(
-    TED_mean = ('TED_combined', 'mean'),
-    TED_std  = ('TED_combined', 'std'),
-).reset_index()
-
-summary_dl_s7 = df_s7.groupby('ttl').agg(
-    deadlock_rate = ('deadlock', 'mean'),
-    n_deadlocks   = ('deadlock', 'sum'),
-).reset_index()
-
-summary_s7 = summary_ted_s7.merge(summary_dl_s7, on='ttl')
-
-ttl_vals = summary_s7['ttl'].values
-ttl_lbls = [f'{v}s\\n({v/CTRL_FREQ:.1f}×)' for v in ttl_vals]
-ttl_pos  = list(range(len(ttl_vals)))
-
-fig, ax1 = plt.subplots(figsize=(12, 6))
-fig.suptitle(
-    f'DISPATCHER_PRIORITY_TTL kalibratie\\n'
-    f'(alle BEST-instellingen, {N_SEEDS} seeds | TED excl. deadlocked seeds)',
-    fontsize=12, fontweight='bold',
-)
-
-c_ted = '#4C72B0'
-c_dl  = '#D62728'
-
-ax1.plot(ttl_pos, summary_s7['TED_mean'], 'o-', color=c_ted, lw=2.5, ms=8,
-         label='TED_combined (μ, excl. DL)')
-ax1.fill_between(
-    ttl_pos,
-    summary_s7['TED_mean'] - summary_s7['TED_std'],
-    summary_s7['TED_mean'] + summary_s7['TED_std'],
-    alpha=0.18, color=c_ted, label='±1 std',
-)
-ax1.set_xticks(ttl_pos)
-ax1.set_xticklabels(ttl_lbls, fontsize=10)
-ax1.set_xlabel(f'DISPATCHER_PRIORITY_TTL  (veelvoud van controller_freq={CTRL_FREQ}s)',
-               fontsize=11)
-ax1.set_ylabel('TED_combined (s)', color=c_ted, fontsize=11)
-ax1.tick_params(axis='y', labelcolor=c_ted)
-
-# Deadlock-rate op volledige df (= de veiligheidsmeting)
-ax2 = ax1.twinx()
-ax2.plot(ttl_pos, summary_s7['deadlock_rate'] * 100, 's--', color=c_dl,
-         lw=2, ms=8, alpha=0.85, label='Deadlock rate % (alle seeds)')
-ax2.fill_between(ttl_pos,
-    [0] * len(ttl_pos),
-    summary_s7['deadlock_rate'] * 100,
-    alpha=0.08, color=c_dl)
-ax2.set_ylabel('Deadlock rate (% seeds)', color=c_dl, fontsize=11)
-ax2.tick_params(axis='y', labelcolor=c_dl)
-ax2.set_ylim(-2, 105)
-
-ref_pos = list(ttl_vals).index(CTRL_FREQ) if CTRL_FREQ in ttl_vals else None
-if ref_pos is not None:
-    ax1.axvline(ref_pos, color='grey', linestyle=':', lw=1.5, alpha=0.7,
-                label=f'Minimum veilig (= controller_freq = {CTRL_FREQ}s)')
-
-h1, l1 = ax1.get_legend_handles_labels()
-h2, l2 = ax2.get_legend_handles_labels()
-ax1.legend(h1 + h2, l1 + l2, loc='upper right', fontsize=9)
-ax1.grid(alpha=0.3)
-
-plt.tight_layout()
-plt.savefig(CALIB_DIR / 's7_dispatcher_ttl.png', dpi=150, bbox_inches='tight')
-plt.show()
-
-print('\\nNumeriek overzicht (TED excl. DL, deadlock_rate op alle seeds):')
-print(summary_s7[['ttl','TED_mean','TED_std','deadlock_rate','n_deadlocks']].to_string(index=False))
-"""))
-
-cells.append(new_code_cell("""\
-# ── Beste waarde ─────────────────────────────────────────────────────────────
-# Strategie: kies de laagste TTL (minste geheugen aan stale MIP) waarvoor
-#   (a) TED_combined ≤ 101% van het minimum  EN
-#   (b) deadlock_rate = 0 (geen enkel seed met deadlock)
-#
-# Als alle TTL-waarden gelijk presteren → kies 2× controller_freq (veilige buffer).
-
-safe     = summary_s7[summary_s7['deadlock_rate'] == 0.0]
-ted_min  = safe['TED_mean'].min() if len(safe) else summary_s7['TED_mean'].min()
-cands    = safe.loc[safe['TED_mean'] <= ted_min * 1.01, 'ttl'] if len(safe) else summary_s7['ttl']
-BEST_TTL = int(cands.min()) if len(cands) else int(CTRL_FREQ * 2)
-
-print(f'Auto-geselecteerd (laagste veilige TTL met TED ≤ 101% min):')
-print(f'  DISPATCHER_PRIORITY_TTL = {BEST_TTL}s  ({BEST_TTL/CTRL_FREQ:.1f}× controller_freq)')
-row_t = summary_s7.loc[summary_s7['ttl'] == BEST_TTL].iloc[0]
-print(f'  TED_combined            = {row_t["TED_mean"]:.0f} ± {row_t["TED_std"]:.0f}s')
-print(f'  Deadlock rate           = {row_t["deadlock_rate"]*100:.1f}%')
-print()
-print('Aanbeveling: gebruik minstens 1.5× controller_freq als buffer.')
-print('Pas handmatig aan op basis van de figuur:')
-print('  # BEST_TTL = 1800')
-"""))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTIE 5
@@ -1369,7 +1186,6 @@ params = {
     'min_objective_improvement':        BEST_MOI,
     'SWITCH_PENALTY':                   BEST_SP,
     'RETRACK_CONFLICT_WINDOW': BEST_RCW,
-    'DISPATCHER_PRIORITY_TTL': BEST_TTL,
 }
 
 for k, v in params.items():

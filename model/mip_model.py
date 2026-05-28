@@ -39,8 +39,7 @@ def build_and_solve_model(
     time_limit=None, verbose=True, platform_alternatives=None,
 ):
     model = gp.Model("rail_rescheduling")
-    if not verbose:
-        model.Params.OutputFlag = 0
+    model.Params.OutputFlag = 0
     if time_limit is not None:
         model.Params.TimeLimit = time_limit
 
